@@ -244,11 +244,16 @@ NIiter(CKTcircuit *ckt, int maxIter)
 
             /* moved it to here as if xspice is included then CKTload changes
                CKTnumStates the first time it is run */
-            if (!OldCKTstate0)
-                OldCKTstate0 = TMALLOC(double, ckt->CKTnumStates + 1);
-            if (ckt->CKTstate0)
-                memcpy(OldCKTstate0, ckt->CKTstate0,
-                       (size_t) ckt->CKTnumStates * sizeof(double));
+            /* fork-lite: OldCKTstate0 is only used by the node damping
+               block below, which runs in the operating point only */
+            if (ckt->CKTnodeDamping &&
+                (ckt->CKTmode & (MODETRANOP | MODEDCOP))) {
+                if (!OldCKTstate0)
+                    OldCKTstate0 = TMALLOC(double, ckt->CKTnumStates + 1);
+                if (ckt->CKTstate0)
+                    memcpy(OldCKTstate0, ckt->CKTstate0,
+                           (size_t) ckt->CKTnumStates * sizeof(double));
+            }
 
             startTime = SPfrontEnd->IFseconds();
             SMPsolve(ckt->CKTmatrix, ckt->CKTrhs, ckt->CKTrhsSpare);
