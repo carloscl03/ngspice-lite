@@ -5204,6 +5204,12 @@ struct dependency {
 };
 
 
+/* fork-lite: name -> index+1 of the effective (last) definition of each
+   parameter, valid while inp_sort_params runs. Replaces O(n^2) scans. */
+static NGHASHPTR sort_params_tab = NULL;
+
+static int identifier_char(char c);
+
 static int inp_get_param_level(
         int param_num, struct dependency *deps, int num_params)
 {
@@ -5231,9 +5237,17 @@ static int inp_get_param_level(
 
     for (i = 0; deps[param_num].depends_on[i]; i++) {
 
-        for (k = 0; k < num_params; k++)
-            if (deps[param_num].depends_on[i] == deps[k].param_name)
-                break;
+        if (sort_params_tab) {
+            k = (int) (intptr_t) nghash_find(sort_params_tab,
+                    deps[param_num].depends_on[i]) - 1;
+            if (k < 0)
+                k = num_params;
+        }
+        else {
+            for (k = 0; k < num_params; k++)
+                if (deps[param_num].depends_on[i] == deps[k].param_name)
+                    break;
+        }
 
         if (k >= num_params) {
             fprintf(stderr,
@@ -5461,6 +5475,23 @@ static char *ya_search_identifier(
 static void inp_quote_params(struct card *s_c, struct card *e_c,
         struct dependency *deps, int num_params);
 
+/* fork-lite: append `param` to dep->depends_on unless already there */
+static void add_param_dependency(struct dependency *dep, char *param)
+{
+    int ind;
+
+    for (ind = 0; dep->depends_on[ind]; ind++)
+        if (dep->depends_on[ind] == param)
+            return;
+    dep->depends_on[ind++] = param;
+    if (ind == DEPENDSON) {
+        fprintf(stderr, "Error in netlist: Too many parameter dependencies (> %d)\n", ind);
+        fprintf(stderr, "    Please check your netlist.\n");
+        controlled_exit(EXIT_BAD);
+    }
+    dep->depends_on[ind] = NULL;
+}
+
 /* sort parameters based on parameter dependencies */
 
 static void inp_sort_params(struct card *param_cards,
@@ -5503,34 +5534,73 @@ static void inp_sort_params(struct card *param_cards,
     // look for duplicately defined parameters and mark earlier one to skip
     // param list is ordered as defined in netlist
 
+    /* fork-lite: the original code compared every pair of parameters
+       (O(n^2) strcmp, then O(n^2) substring searches), which dominates
+       netlist loading with large PDK libraries (thousands of .param).
+       Walking backwards, a name already in the table means a later
+       definition exists, so this one is skipped, as before. */
+    sort_params_tab = nghash_init(num_params > 0 ? num_params : 1);
+    nghash_unique(sort_params_tab, TRUE);
+
     skipped = 0;
-    for (i = 0; i < num_params; i++) {
-        for (j = i + 1; j < num_params; j++)
-            if (strcmp(deps[i].param_name, deps[j].param_name) == 0)
-                break;
-        if (j < num_params) {
+    for (i = num_params - 1; i >= 0; i--)
+        if (nghash_insert(sort_params_tab, deps[i].param_name,
+                (void *) (intptr_t) (i + 1))) {
             deps[i].skip = 1;
             skipped++;
         }
-    }
 
-    for (i = 0; i < num_params; i++)
-        if (!deps[i].skip) {
-            char *param = deps[i].param_name;
-            for (j = 0; j < num_params; j++)
-                if (j != i &&
-                        search_plain_identifier(deps[j].param_str, param)) {
-                    for (ind = 0; deps[j].depends_on[ind]; ind++)
-                        ;
-                    deps[j].depends_on[ind++] = param;
-                    if (ind == DEPENDSON) {
-                        fprintf(stderr, "Error in netlist: Too many parameter dependencies (> %d)\n", ind);
-                        fprintf(stderr, "    Please check your netlist.\n");
-                        controlled_exit(EXIT_BAD);
-                    }
-                    deps[j].depends_on[ind] = NULL;
+    /* A param depends on every other (effective) param whose name occurs
+       in its expression as a plain identifier. For names made only of
+       identifier chars that is exactly a maximal identifier run, so one
+       tokenizing pass per expression plus a hash lookup per token gives
+       the same set as search_plain_identifier() over all pairs. Names
+       with other chars keep the original search. */
+    {
+        int *odd = TMALLOC(int, num_params > 0 ? num_params : 1);
+        int n_odd = 0;
+
+        for (i = 0; i < num_params; i++)
+            if (!deps[i].skip) {
+                const char *q = deps[i].param_name;
+                for (; *q; q++)
+                    if (!identifier_char(*q))
+                        break;
+                if (*q || !*deps[i].param_name)
+                    odd[n_odd++] = i;
+            }
+
+        for (j = 0; j < num_params; j++) {
+            char *str = deps[j].param_str;
+            char *t = str;
+            int m;
+
+            while (*t) {
+                char *beg, save;
+
+                if (!identifier_char(*t)) {
+                    t++;
+                    continue;
                 }
+                beg = t;
+                while (identifier_char(*t))
+                    t++;
+                save = *t;
+                *t = '\0';
+                i = (int) (intptr_t) nghash_find(sort_params_tab, beg) - 1;
+                *t = save;
+                if (i >= 0 && i != j)
+                    add_param_dependency(&deps[j], deps[i].param_name);
+            }
+
+            for (m = 0; m < n_odd; m++) {
+                i = odd[m];
+                if (i != j && search_plain_identifier(str, deps[i].param_name))
+                    add_param_dependency(&deps[j], deps[i].param_name);
+            }
         }
+        tfree(odd);
+    }
 
     max_level = 0;
     for (i = 0; i < num_params; i++) {
@@ -5561,6 +5631,9 @@ static void inp_sort_params(struct card *param_cards,
                 ind, num_params);
         controlled_exit(EXIT_FAILURE);
     }
+
+    nghash_free(sort_params_tab, NULL, NULL);
+    sort_params_tab = NULL;
 
     inp_quote_params(s_c, e_c, deps, num_params);
 
