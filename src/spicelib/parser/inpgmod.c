@@ -342,6 +342,12 @@ INPgetModBin(CKTcircuit *ckt, char *name, INPmodel **model, INPtables *tab, char
                     return NULL;
             }
 
+            /* fork-lite: report the selected bin, used by spice-trim */
+            /* env var so the trace runs under the user's exact spiceinit */
+            if (getenv("NGSPICE_MODBIN_TRACE") || cp_getvar("modbin_trace", CP_BOOL, NULL, 0))
+                fprintf(cp_err, "modbin: %.*s %s\n",
+                        (int) strcspn(line, " \t"), line, modtmp->INPmodName);
+
             *model = modtmp;
             return NULL;
         }
