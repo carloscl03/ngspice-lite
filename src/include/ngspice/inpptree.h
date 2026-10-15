@@ -53,6 +53,12 @@ typedef struct INPparseNode {
     void (*function)(void); /* ... and pointer to the function. */
     void *data;                 /* private data for certain functions, currently PTF_PWL */
     int usecnt;
+    /* fork-lite: per-evaluation memo, see PTeval() in ifeval.c. A node is
+       evaluated once per IFeval() call even when it is shared between the
+       value tree and the derivative trees, or merged by PTcse(). */
+    double cache_val;
+    unsigned int cache_gen;
+    int impure;                 /* subtree contains ddt(): never memoised */
 } INPparseNode;
 
 /* A debugging function */

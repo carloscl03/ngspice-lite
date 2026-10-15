@@ -7,6 +7,7 @@ Author: 1987 Wayne A. Christopher, U. C. Berkeley CAD Group
 /* Tree generator for B-Source parser */
 
 #include "ngspice/ngspice.h"
+#include <stdint.h>
 #include "ngspice/compatmode.h"
 #include "ngspice/ifsim.h"
 #include "ngspice/iferrmsg.h"
@@ -35,6 +36,7 @@ static INPparseNode *mkinode(char *name);
 static INPparseNode *PTdifferentiate(INPparseNode * p, int varnum);
 
 static void free_tree(INPparseNode *);
+static void PTcse(INPparseTree *pt);
 static void printTree(INPparseNode *);
 
 static double gauss(double nominal_val, double rel_variation, double sigma);
@@ -236,6 +238,8 @@ INPgetTree(char **line, INPparseTree ** pt, CKTcircuit *ckt, INPtables * tab)
 
         for (i = 0; i < numvalues; i++)
             (*pt)->derivs[i] = inc_usage(PTdifferentiate(p, i));
+
+        PTcse(*pt);
 
     }
 
@@ -1687,6 +1691,232 @@ void free_tree(INPparseNode *pt)
 
     txfree(pt);
 }
+
+/* ---------------------------------------------------------------------
+ * fork-lite: common subexpression elimination.
+ *
+ * .func expansion and symbolic differentiation produce trees full of
+ * structurally identical subtrees (the same gp(s) a dozen times, the whole
+ * value tree inside each derivative, ...). PTeval() memoises per node, so
+ * turning the trees into a DAG with one node per distinct expression makes
+ * every distinct subexpression cost exactly one evaluation per IFeval().
+ *
+ * Two nodes are equivalent when they have the same type and payload and
+ * the same (already canonical) children. Constants compare bitwise, so
+ * 0.0 and -0.0 stay distinct and the arithmetic performed is unchanged:
+ * results are bit-identical to the un-merged trees. Nodes with private
+ * data (pwl, ddt) only merge with themselves.
+ * ------------------------------------------------------------------- */
+
+struct cse_entry {
+    INPparseNode *key;          /* original node (seen table) or node itself */
+    INPparseNode *canon;
+    struct cse_entry *next;
+};
+
+struct cse_tab {
+    struct cse_entry **bucket;
+    size_t nbuckets;
+};
+
+static unsigned long
+cse_hash(const INPparseNode *p)
+{
+    unsigned long h = (unsigned long) p->type * 1000003UL;
+
+    switch (p->type) {
+    case PT_CONSTANT: {
+        unsigned long long u;
+        memcpy(&u, &p->constant, sizeof u);
+        h ^= (unsigned long) u ^ (unsigned long) (u >> 32);
+        break;
+    }
+    case PT_VAR:
+        h ^= (unsigned long) p->valueIndex * 7919UL;
+        break;
+    case PT_FUNCTION:
+        h ^= (unsigned long) p->funcnum * 31UL
+            ^ (unsigned long) (uintptr_t) p->left * 131UL
+            ^ (unsigned long) (uintptr_t) p->data;
+        break;
+    case PT_TIME:
+    case PT_TEMPERATURE:
+    case PT_FREQUENCY:
+        h ^= (unsigned long) (uintptr_t) p->data;
+        break;
+    default:
+        h ^= (unsigned long) (uintptr_t) p->left * 131UL
+            ^ (unsigned long) (uintptr_t) p->right * 65599UL;
+        break;
+    }
+    return h;
+}
+
+static int
+cse_equal(const INPparseNode *a, const INPparseNode *b)
+{
+    if (a->type != b->type)
+        return 0;
+    switch (a->type) {
+    case PT_CONSTANT:
+        return memcmp(&a->constant, &b->constant, sizeof(double)) == 0;
+    case PT_VAR:
+        return a->valueIndex == b->valueIndex;
+    case PT_FUNCTION:
+        return a->funcnum == b->funcnum && a->function == b->function &&
+               a->left == b->left && a->data == b->data;
+    case PT_TIME:
+    case PT_TEMPERATURE:
+    case PT_FREQUENCY:
+        return a->data == b->data;
+    default:
+        return a->left == b->left && a->right == b->right;
+    }
+}
+
+static struct cse_entry *
+cse_lookup(struct cse_tab *t, INPparseNode *key, int by_pointer)
+{
+    unsigned long h = by_pointer ? (unsigned long) (uintptr_t) key / 16
+                                 : cse_hash(key);
+    struct cse_entry *e;
+
+    for (e = t->bucket[h % t->nbuckets]; e; e = e->next)
+        if (by_pointer ? e->key == key : cse_equal(e->key, key))
+            return e;
+    return NULL;
+}
+
+static void
+cse_insert(struct cse_tab *t, INPparseNode *key, INPparseNode *canon, int by_pointer)
+{
+    unsigned long h = by_pointer ? (unsigned long) (uintptr_t) key / 16
+                                 : cse_hash(key);
+    struct cse_entry *e = TMALLOC(struct cse_entry, 1);
+
+    e->key = key;
+    e->canon = canon;
+    e->next = t->bucket[h % t->nbuckets];
+    t->bucket[h % t->nbuckets] = e;
+}
+
+static void
+cse_free(struct cse_tab *t)
+{
+    size_t i;
+    for (i = 0; i < t->nbuckets; i++) {
+        struct cse_entry *e = t->bucket[i], *n;
+        for (; e; e = n) {
+            n = e->next;
+            txfree(e);
+        }
+    }
+    txfree(t->bucket);
+}
+
+static int cse_nodes_in, cse_nodes_out;
+
+/* Return the canonical node for p, canonicalising its children first.
+   `seen` maps every visited original node to its canonical node, so shared
+   subtrees are processed once; `uniq` holds one entry per distinct
+   expression. Child slots are rewritten in place with usecnt kept exact. */
+static INPparseNode *
+cse_canon(INPparseNode *p, struct cse_tab *uniq, struct cse_tab *seen)
+{
+    struct cse_entry *e;
+    INPparseNode *c;
+
+    if (!p)
+        return NULL;
+    if ((e = cse_lookup(seen, p, 1)) != NULL)
+        return e->canon;
+
+    cse_nodes_in++;
+
+    switch (p->type) {
+    case PT_FUNCTION:
+        c = cse_canon(p->left, uniq, seen);
+        if (c != p->left) {
+            inc_usage(c);
+            dec_usage(p->left);
+            p->left = c;
+        }
+        break;
+    case PT_PLUS:
+    case PT_MINUS:
+    case PT_TIMES:
+    case PT_DIVIDE:
+    case PT_POWER:
+    case PT_COMMA:
+    case PT_TERN:
+        c = cse_canon(p->left, uniq, seen);
+        if (c != p->left) {
+            inc_usage(c);
+            dec_usage(p->left);
+            p->left = c;
+        }
+        c = cse_canon(p->right, uniq, seen);
+        if (c != p->right) {
+            inc_usage(c);
+            dec_usage(p->right);
+            p->right = c;
+        }
+        break;
+    default:
+        break;
+    }
+
+    p->impure = (p->type == PT_FUNCTION && p->funcnum == PTF_DDT) ||
+                (p->type != PT_CONSTANT && p->type != PT_VAR &&
+                 ((p->left && p->left->impure) ||
+                  (p->type != PT_FUNCTION && p->right && p->right->impure)));
+    p->cache_gen = 0;
+
+    if ((e = cse_lookup(uniq, p, 0)) != NULL) {
+        cse_insert(seen, p, e->canon, 1);
+        return e->canon;
+    }
+    cse_nodes_out++;
+    cse_insert(uniq, p, p, 0);
+    cse_insert(seen, p, p, 1);
+    return p;
+}
+
+static void
+PTcse(INPparseTree *pt)
+{
+    struct cse_tab uniq, seen;
+    INPparseNode *c;
+    int i;
+
+    uniq.nbuckets = seen.nbuckets = 4096;
+    uniq.bucket = TMALLOC(struct cse_entry *, uniq.nbuckets);
+    seen.bucket = TMALLOC(struct cse_entry *, seen.nbuckets);
+    cse_nodes_in = cse_nodes_out = 0;
+
+    c = cse_canon(pt->tree, &uniq, &seen);
+    if (c != pt->tree) {
+        inc_usage(c);
+        dec_usage(pt->tree);
+        pt->tree = c;
+    }
+    for (i = 0; i < pt->p.numVars; i++) {
+        c = cse_canon(pt->derivs[i], &uniq, &seen);
+        if (c != pt->derivs[i]) {
+            inc_usage(c);
+            dec_usage(pt->derivs[i]);
+            pt->derivs[i] = c;
+        }
+    }
+
+    if (getenv("NGSPICE_CSE_STATS"))
+        fprintf(stderr, "cse: %d nodes -> %d distinct (%d vars)\n",
+                cse_nodes_in, cse_nodes_out, pt->p.numVars);
+
+    cse_free(&uniq);
+    cse_free(&seen);
+}
+
 
 static double
 gauss(double nominal_val, double rel_variation, double sigma)

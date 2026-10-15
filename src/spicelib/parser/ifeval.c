@@ -22,6 +22,13 @@ extern double PTfudge_factor;
 static int PTeval(INPparseNode * tree, double gmin, double *res,
 		  double *vals);
 
+/* fork-lite: generation stamp, bumped once per IFeval() call. A node whose
+   cache_gen equals the current stamp has already been evaluated with the
+   same vals in this call and returns its cached value. Evaluation is
+   serial (ASRCload runs outside the OpenMP device loops), so a single
+   static counter is enough. */
+static unsigned int ptgen = 0;
+
 
 
 int
@@ -42,6 +49,9 @@ IFeval(IFparseTree * tree, double gmin, double *result, double *vals,
     for (i = 0; i < myTree->p.numVars; i++)
 	printf("\tvar%d = %lg\n", i, vals[i]);
 #endif
+
+    if (++ptgen == 0)
+        ptgen = 1;              /* 0 is the "never evaluated" stamp */
 
     if ((err = PTeval(myTree->tree, gmin, result, vals)) != OK) {
         if (ft_ngdebug) {
@@ -82,6 +92,14 @@ PTeval(INPparseNode * tree, double gmin, double *res, double *vals)
 {
     double r1, r2;
     int err;
+    /* leaves are cheaper to read than to look up in the cache */
+    int cacheable = !tree->impure &&
+                    tree->type != PT_CONSTANT && tree->type != PT_VAR;
+
+    if (cacheable && tree->cache_gen == ptgen) {
+        *res = tree->cache_val;
+        return (OK);
+    }
 
     PTfudge_factor = gmin * 1.0e-20; /* defaults to 1e-32, should be small enough */
     switch (tree->type) {
@@ -184,6 +202,11 @@ PTeval(INPparseNode * tree, double gmin, double *res, double *vals)
     default:
 	fprintf(stderr, "Internal Error: bad node type %d\n", tree->type);
 	return (E_PANIC);
+    }
+
+    if (cacheable) {
+        tree->cache_val = *res;
+        tree->cache_gen = ptgen;
     }
 
     return (OK);
