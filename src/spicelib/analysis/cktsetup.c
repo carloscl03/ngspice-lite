@@ -91,6 +91,12 @@ CKTsetup(CKTcircuit *ckt)
         nthreads = 2;
 
     omp_set_num_threads(nthreads);
+
+    /* fork-lite: with few instances the fork/join and spin-wait cost of a
+       parallel region exceeds the work (59 MOSFETs: 8 threads was 40 % slower
+       than 1). Loops stay serial below this count. */
+    if (!cp_getvar("omp_min_inst", CP_NUM, &ckt->CKTompMinInst, 0))
+        ckt->CKTompMinInst = 256;
 /*    if (nthreads == 1)
       printf("OpenMP: %d thread is requested in ngspice\n", nthreads);
     else

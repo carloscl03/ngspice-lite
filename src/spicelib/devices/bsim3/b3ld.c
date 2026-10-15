@@ -50,7 +50,7 @@ CKTcircuit *ckt)
     BSIM3instance **InstArray;
     InstArray = model->BSIM3InstanceArray;
 
-#pragma omp parallel for
+#pragma omp parallel for if (model->BSIM3InstCount >= ckt->CKTompMinInst)
     for (idx = 0; idx < model->BSIM3InstCount; idx++) {
         BSIM3instance *here = InstArray[idx];
         int local_error = BSIM3LoadOMP(here, ckt);

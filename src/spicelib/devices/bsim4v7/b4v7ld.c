@@ -78,7 +78,7 @@ CKTcircuit *ckt)
     BSIM4v7instance **InstArray;
     InstArray = model->BSIM4v7InstanceArray;
 
-#pragma omp parallel for
+#pragma omp parallel for if (model->BSIM4v7InstCount >= ckt->CKTompMinInst)
     for (idx = 0; idx < model->BSIM4v7InstCount; idx++) {
         BSIM4v7instance *here = InstArray[idx];
         int local_error = BSIM4v7LoadOMP(here, ckt);

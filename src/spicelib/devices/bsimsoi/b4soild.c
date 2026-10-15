@@ -113,7 +113,7 @@ B4SOIload(
     B4SOIinstance **InstArray;
     InstArray = model->B4SOIInstanceArray;
 
-#pragma omp parallel for
+#pragma omp parallel for if (model->B4SOIInstCount >= ckt->CKTompMinInst)
     for (idx = 0; idx < model->B4SOIInstCount; idx++) {
         B4SOIinstance *here = InstArray[idx];
         int local_error = B4SOILoadOMP(here, ckt);

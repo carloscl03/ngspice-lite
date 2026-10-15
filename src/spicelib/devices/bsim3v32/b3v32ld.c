@@ -46,7 +46,7 @@ BSIM3v32load (GENmodel *inModel, CKTcircuit *ckt)
     BSIM3v32instance **InstArray;
     InstArray = model->BSIM3v32InstanceArray;
 
-#pragma omp parallel for
+#pragma omp parallel for if (model->BSIM3v32InstCount >= ckt->CKTompMinInst)
     for (idx = 0; idx < model->BSIM3v32InstCount; idx++) {
         BSIM3v32instance *here = InstArray[idx];
         int local_error = BSIM3v32LoadOMP(here, ckt);

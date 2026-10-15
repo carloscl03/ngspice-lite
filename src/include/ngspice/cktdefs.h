@@ -199,6 +199,8 @@ struct CKTcircuit {
 #define MODEUIC 0x10000l
 
     int CKTbypass;              /* bypass option, how does it work ?  */
+    int CKTompMinInst;          /* fork-lite: min. instances per model before a
+                                   device load loop goes parallel (omp_min_inst) */
     int CKTdcMaxIter;           /* iteration limit for dc op.  (itl1) */
     int CKTdcTrcvMaxIter;       /* iteration limit for dc tran. curv
                                    (itl2) */

@@ -232,7 +232,7 @@ int HSM2load(
     HSM2instance **InstArray;
     InstArray = model->HSM2InstanceArray;
 
-#pragma omp parallel for
+#pragma omp parallel for if (model->HSM2InstCount >= ckt->CKTompMinInst)
     for (idx = 0; idx < model->HSM2InstCount; idx++) {
         HSM2instance *here = InstArray[idx];
         int local_error = HSM2LoadOMP(here, ckt);
