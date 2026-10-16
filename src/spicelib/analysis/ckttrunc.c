@@ -16,9 +16,12 @@ Author: 1985 Thomas L. Quarles
 #include "ngspice/sperror.h"
 
 //#define STEPDEBUG
+const char *CKTtruncCutter = "-";   /* steptrace: device type that limited the step */
+
 int
 CKTtrunc(CKTcircuit *ckt, double *timeStep)
 {
+    CKTtruncCutter = "-";
     if (ckt->CKTnewtrunc == 0) {
         int i;
         double timetemp;
@@ -36,7 +39,12 @@ CKTtrunc(CKTcircuit *ckt, double *timeStep)
 #ifdef STEPDEBUG
                 debugtemp = timetemp;
 #endif /* STEPDEBUG */
-                error = DEVices[i]->DEVtrunc(ckt->CKThead[i], ckt, &timetemp);
+                {   /* steptrace */
+                    double before = timetemp;
+                    error = DEVices[i]->DEVtrunc(ckt->CKThead[i], ckt, &timetemp);
+                    if (timetemp < before)
+                        CKTtruncCutter = DEVices[i]->DEVpublic.name;
+                }
                 if (error) {
                     ckt->CKTstat->STATtranTruncTime += SPfrontEnd->IFseconds()
                         - startTime;

@@ -33,6 +33,7 @@ extern struct dbcomm *dbs;
 #include "ngspice/mif.h"
 #include "ngspice/evtproto.h"
 #include "ngspice/ipctiein.h"
+extern const char *CKTtruncCutter;   /* steptrace */
 #endif
 
 #ifdef SHARED_MODULE
@@ -93,6 +94,8 @@ DCtran(CKTcircuit *ckt,
     IFuid *nameList;
     int numNames;
     double maxstepsize = 0.0;
+    int st_on = getenv("NGSPICE_STEPTRACE") != NULL;   /* steptrace */
+    int st_atbrk = 0, st_iter0 = 0;
 
     bool have_autostop = FALSE, flag_autostop = FALSE;
 
@@ -353,6 +356,7 @@ DCtran(CKTcircuit *ckt,
     }
 
     nextTime:
+    st_atbrk = 0;
 
     /* begin LTRA code addition */
     if (ckt->CKTtimePoints) {
@@ -492,6 +496,7 @@ resume:
            and limit timestep to .1 times minimum of time to next breakpoint,
            and previous timestep. */
         ckt->CKTorder = 1;
+        st_atbrk = 1;
 #ifdef STEPDEBUG
         if( (ckt->CKTdelta > .1*ckt->CKTsaveDelta) ||
             (ckt->CKTdelta > .1*(ckt->CKTbreaks[1] - ckt->CKTbreaks[0])) ) {
@@ -678,6 +683,7 @@ resume:
 #endif
         olddelta=ckt->CKTdelta;
         /* time abort? */
+        st_iter0 = ckt->CKTstat->STATnumIter;
         ckt->CKTtime += ckt->CKTdelta;
         ckt->CKTdeltaOld[0]=ckt->CKTdelta;
         NIcomCof(ckt);
@@ -723,6 +729,9 @@ resume:
 
         /* If no convergence in Central solver step */
         if(converged != 0) {
+            if (st_on) fprintf(stderr, "ST NONCONV t=%.6e h=%.3e ord=%d brk=%d it=%d\n",
+                ckt->CKTtime, ckt->CKTdelta, ckt->CKTorder, st_atbrk,
+                ckt->CKTstat->STATnumIter - st_iter0);
 
 #ifndef SHARED_MODULE
             ckt->CKTtime = ckt->CKTtime -ckt->CKTdelta;
@@ -798,6 +807,11 @@ resume:
                 UPDATE_STATS(DOING_TRAN);
                 return(error);
             }
+            if (st_on) fprintf(stderr, "ST %s t=%.6e h=%.3e new=%.3e ratio=%.3f ord=%d cut=%s brk=%d it=%d\n",
+                (newdelta > .9 * ckt->CKTdelta) ? "ACCEPT" : "REJECT",
+                ckt->CKTtime, ckt->CKTdelta, newdelta, newdelta / ckt->CKTdelta,
+                ckt->CKTorder, CKTtruncCutter, st_atbrk,
+                ckt->CKTstat->STATnumIter - st_iter0);
             if (newdelta > .9 * ckt->CKTdelta) {
 #if defined(XSPICE)
                 /* The timestep has succeeded.  XSPICE instances with
