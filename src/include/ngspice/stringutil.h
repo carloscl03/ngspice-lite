@@ -41,7 +41,22 @@ struct substring_match_info {
 void appendc(char *s, char c);
 int cieq(const char *p, const char *s);
 int cieqn(const char *p, const char *s, size_t n);
-int ciprefix(const char *p, const char *s);
+int ciprefix_full(const char *p, const char *s);
+
+/* fork-lite: ciprefix() is called a few dozen times per netlist line to
+   dispatch on dot commands; nearly all of them fail on the first
+   character. Decide that here, inline, and only call the real comparison
+   when the first characters match ignoring ASCII case (what tolower()
+   does for the literal prefixes this is used with). */
+static inline int ciprefix(const char *p, const char *s)
+{
+    unsigned int a = (unsigned char) *p, b = (unsigned char) *s;
+    if (a == 0)
+        return 1;
+    if (a != b && ((a ^ b) != 0x20 || (a | 0x20) < 'a' || (a | 0x20) > 'z'))
+        return 0;
+    return ciprefix_full(p, s);
+}
 char *dup_string(const char *str, size_t n_char);
 char *find_first_of(const char *haystack,
         unsigned int n_needle, const char *p_needle);

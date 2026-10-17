@@ -294,7 +294,7 @@ int cieqn(const char *p, const char *s, size_t n)
 static unsigned char ci_lower[256];
 static int ci_lower_ready;
 
-int ciprefix(const char *p, const char *s)
+int ciprefix_full(const char *p, const char *s)
 {
     const unsigned char *up = (const unsigned char *) p;
     const unsigned char *us = (const unsigned char *) s;
