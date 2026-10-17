@@ -5753,10 +5753,10 @@ static void inp_sort_params(struct card *param_cards,
         controlled_exit(EXIT_FAILURE);
     }
 
+    inp_quote_params(s_c, e_c, deps, num_params);
+
     nghash_free(sort_params_tab, NULL, NULL);
     sort_params_tab = NULL;
-
-    inp_quote_params(s_c, e_c, deps, num_params);
 
     // clean up memory
     for (i = 0; i < arr_size; i++) {
@@ -8714,9 +8714,30 @@ static void inp_quote_params(struct card *c, struct card *end_c,
 {
     bool in_control = FALSE;
     int start_off = 0;
+    /* fork-lite: see the candidate selection below */
+    int *quote_cand = TMALLOC(int, num_params > 0 ? num_params : 1);
+    int *quote_odd = TMALLOC(int, num_params > 0 ? num_params : 1);
+    unsigned char *quote_seen = TMALLOC(unsigned char, num_params > 0 ? num_params : 1);
+    int n_odd = 0, n_cand, ci;
 
-    if (cp_getvar("no_auto_braces", CP_BOOL, NULL, 0))
+    if (cp_getvar("no_auto_braces", CP_BOOL, NULL, 0)) {
+        tfree(quote_cand); tfree(quote_odd); tfree(quote_seen);
         return;
+    }
+
+    /* names that are not plain identifiers cannot be found by tokenising
+       and are always tried (a handful in a PDK, from .param conditions) */
+    {
+        int i;
+        for (i = 0; i < num_params; i++) {
+            const char *q = deps[i].param_name;
+            for (; *q; q++)
+                if (!identifier_char(*q))
+                    break;
+            if (*q || !*deps[i].param_name)
+                quote_odd[n_odd++] = i;
+        }
+    }
 
     for (; c && c != end_c; c = c->nextcard) {
 
@@ -8759,9 +8780,51 @@ static void inp_quote_params(struct card *c, struct card *end_c,
             start_off = (int) (s0 - curr_line);
         }
 
-        for (i = 0; i < num_params; i++) {
+        /* fork-lite: the original loop tried every parameter name on every
+           device line (14k names in sky130, so a million strstr() calls).
+           A name can only match ya_search_identifier() where it stands as
+           a maximal identifier token, so tokenise the line once, look the
+           tokens up in the name hash built by inp_sort_params(), and run
+           the unchanged search only for those names (plus the few
+           non-identifier ones). Quoting a name twice is a no-op, so
+           duplicates resolving to the same name are harmless. */
+        n_cand = 0;
+        if (sort_params_tab) {
+            char *t = curr_line + start_off;
+            while (*t) {
+                char *beg, save;
+                int k;
+                if (!identifier_char(*t)) {
+                    t++;
+                    continue;
+                }
+                beg = t;
+                while (identifier_char(*t))
+                    t++;
+                save = *t;
+                *t = '\0';
+                k = (int) (intptr_t) nghash_find(sort_params_tab, beg) - 1;
+                *t = save;
+                if (k >= 0 && !quote_seen[k]) {
+                    quote_seen[k] = 1;
+                    quote_cand[n_cand++] = k;
+                }
+            }
+            for (ci = 0; ci < n_odd; ci++)
+                if (!quote_seen[quote_odd[ci]]) {
+                    quote_seen[quote_odd[ci]] = 1;
+                    quote_cand[n_cand++] = quote_odd[ci];
+                }
+        } else {
+            for (i = 0; i < num_params; i++)
+                quote_cand[n_cand++] = i;
+        }
+
+        for (ci = 0; ci < n_cand; ci++) {
 
             char *s = curr_line + start_off;
+            i = quote_cand[ci];
+            quote_seen[i] = 0;
 
             while ((s = ya_search_identifier(
                             s, deps[i].param_name, curr_line)) != NULL) {
