@@ -2005,13 +2005,13 @@ static struct inp_read_t inp_read(FILE* fp, int call_depth, const char* dir_name
         shell_eol_continuation = chk_for_line_continuation(buffer);
 
         {
+            /* fork-lite: the card takes ownership of `buffer' (an exact
+               size allocation from readline(), or circarray's line) */
             end = insert_new_line(
-                    end, copy(buffer), line_number++, line_number_orig++, sourcelineinfo);
+                    end, buffer, line_number++, line_number_orig++, sourcelineinfo);
             if (!cc)
                 cc = end;
         }
-
-        tfree(buffer);
     } /* end while ((buffer = readline(fp)) != NULL) */
 
     if (!cc) /* No stuff here */
@@ -2411,53 +2411,50 @@ static char *inp_pathresolve_at(const char *name, const char *dir)
  *-------------------------------------------------------------------------*/
 
 #define STRGROW 256
-
+/* fork-lite: read one line into a buffer that is reused from call to
+   call and return a copy of exactly the right size. The previous version
+   allocated 256 bytes per line, grew them with realloc() and the caller
+   then copied the line again into the card and freed the buffer: four
+   allocator calls per line, for 240k lines in a PDK library. Leading
+   blanks and '\r' are dropped as before; the '\n' is kept. */
 static char *readline(FILE *fd)
 {
+    static char *rl_buf;
+    static size_t rl_cap;
+    char *out;
+    size_t n = 0, len;
     int c;
-    int memlen;
-    char *strptr;
-    int strlen;
 
-    strlen = 0;
-    memlen = STRGROW;
-    strptr = TMALLOC(char, memlen);
-    memlen -= 1; /* Save constant -1's in while loop */
-
+    if (!rl_buf) {
+        rl_cap = 4096;
+        rl_buf = TMALLOC(char, rl_cap);
+    }
 #if defined(__unix__) || defined(__APPLE__)
-    while ((c = getc_unlocked(fd)) != EOF) {   /* fork-lite: no lock per char */
+#define RL_GETC getc_unlocked
 #else
-    while ((c = getc(fd)) != EOF) {
+#define RL_GETC getc
 #endif
-
-        if (strlen == 0 && (c == '\t' || c == ' ')) /* Leading spaces away */
+    while ((c = RL_GETC(fd)) != EOF) {
+        if (n == 0 && (c == '\t' || c == ' ')) /* Leading spaces away */
             continue;
-
         if (c == '\r')
             continue;
-        strptr[strlen++] = (char) c;
-
-        if (strlen >= memlen) {
-            memlen += STRGROW;
-            if ((strptr = TREALLOC(char, strptr, memlen + 1)) == NULL)
-                return (NULL);
+        if (n + 1 >= rl_cap) {
+            rl_cap *= 2;
+            rl_buf = TREALLOC(char, rl_buf, rl_cap);
         }
-
+        rl_buf[n++] = (char) c;
         if (c == '\n')
             break;
     }
-
-    if (!strlen) {
-        tfree(strptr);
-        return (NULL);
-    }
-
-    // strptr[strlen] = '\0';
-    /* Trim the string */
-    strptr = TREALLOC(char, strptr, strlen + 1);
-    strptr[strlen] = '\0';
-
-    return (strptr);
+#undef RL_GETC
+    if (!n)
+        return NULL;
+    rl_buf[n] = '\0';
+    len = n + 1;
+    out = TMALLOC(char, len);
+    memcpy(out, rl_buf, len);
+    return out;
 }
 
 
