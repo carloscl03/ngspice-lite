@@ -3980,10 +3980,10 @@ char *inp_remove_ws(char *s)
     if (d == s)
         return x;
 
-    s = copy(x);
-    tfree(x);
-
-    return s;
+    /* fork-lite: the line was shortened in place above; returning it as
+       is saves a copy and a free per line (the surplus bytes are a few
+       per line and are released with the card) */
+    return x;
 }
 
 
