@@ -76,6 +76,7 @@ Author: 1985 Wayne A. Christopher
 static struct library {
     char *realpath;
     char *habitat;
+    char *section;              /* fork-lite: NULL = whole file */
     struct card *deck;
 } libraries[N_LIBRARIES];
 
@@ -500,15 +501,108 @@ static void delete_libs(void)
 }
 
 
-static struct library *find_lib(char *name)
+static struct library *find_lib(char *name, const char *section)
 {
     int i;
 
     for (i = 0; i < num_libraries; i++)
-        if (cieq(libraries[i].realpath, name))
+        if (cieq(libraries[i].realpath, name) &&
+            ((!section && !libraries[i].section) ||
+             (section && libraries[i].section &&
+              strcasecmp(section, libraries[i].section) == 0)))
             return &libraries[i];
 
     return NULL;
+}
+
+
+/* fork-lite: a .lib file with many sections (PDK corner libraries: sky130
+   has 480k lines, two sections) was read and processed completely, then
+   the requested section copied out. Instead scan the raw file once and
+   hand inp_read() a memory stream holding only the lines from
+   `.lib <section>' to its `.endl'. Sections referenced from inside it go
+   through read_a_lib() again and get their own cache entry.
+   Returns NULL if the section is not in the file (caller falls back to
+   reading the whole file, which then reports the error as before).
+   *first_line receives the 1-based line number of the `.lib' header. */
+static FILE *lib_section_stream(FILE *fp, const char *section, int *first_line)
+{
+    char *line = NULL;
+    size_t cap = 0;
+    ssize_t n;
+    int lineno = 0, inside = 0;
+    size_t len = (size_t) strlen(section);
+    char *buf = NULL;
+    size_t blen = 0, bcap = 0;
+    FILE *mem;
+
+    while ((n = getline(&line, &cap, fp)) != -1) {
+        lineno++;
+        if (!inside) {
+            const char *t = line;
+            while (*t == ' ' || *t == '\t')
+                t++;
+            if (ciprefix(".lib", t)) {
+                const char *a = t + 4, *b;
+                while (*a == ' ' || *a == '\t')
+                    a++;
+                for (b = a; *b && *b != ' ' && *b != '\t' && *b != '\n' && *b != '\r'; b++)
+                    ;
+                /* `.lib name' alone (no file argument) defines a section */
+                if ((size_t) (b - a) == len && strncasecmp(a, section, len) == 0) {
+                    const char *c = b;
+                    while (*c == ' ' || *c == '\t')
+                        c++;
+                    if (*c == '\0' || *c == '\n' || *c == '\r') {
+                        inside = 1;
+                        *first_line = lineno;
+                    }
+                }
+            }
+            if (!inside)
+                continue;
+        }
+        if (blen + (size_t) n + 1 > bcap) {
+            bcap = (bcap + (size_t) n + 1) * 2;
+            buf = TREALLOC(char, buf, bcap);
+        }
+        memcpy(buf + blen, line, (size_t) n);
+        blen += (size_t) n;
+        {
+            const char *t = line;
+            while (*t == ' ' || *t == '\t')
+                t++;
+            if (ciprefix(".endl", t))
+                break;
+        }
+    }
+    free(line);
+    if (!inside) {
+        txfree(buf);
+        return NULL;
+    }
+    buf[blen] = '\0';
+#if defined(_WIN32)
+    mem = tmpfile();
+    if (mem) {
+        fwrite(buf, 1, blen, mem);
+        rewind(mem);
+    }
+    txfree(buf);
+#else
+    mem = fmemopen(buf, blen, "r");
+    if (!mem)
+        txfree(buf);
+    /* buf is freed when the stream is closed: fmemopen does not copy, so
+       keep it alive in a small table instead of leaking it */
+    if (mem) {
+        static char *keep[N_LIBRARIES];
+        static int nkeep;
+        if (nkeep < N_LIBRARIES)
+            keep[nkeep++] = buf;
+    }
+#endif
+    return mem;
 }
 
 
@@ -551,7 +645,8 @@ static struct card *find_section_definition(struct card *c, char *name)
     return NULL;
 }
 
-static struct library *read_a_lib(const char *y, const char *dir_name)
+static struct library *read_a_lib(const char *y, const char *dir_name,
+                                  const char *section)
 {
     char *yy, *y_resolved;
 
@@ -575,9 +670,13 @@ static struct library *read_a_lib(const char *y, const char *dir_name)
         controlled_exit(EXIT_FAILURE);
     }
 
-    lib = find_lib(yy);
+    lib = find_lib(yy, section);
+    if (!lib)
+        lib = find_lib(yy, NULL);   /* whole file already read */
 
     if (!lib) {
+        int first_line = 1;
+        FILE *secfp = NULL;
 
         FILE *newfp = fopen(y_resolved, "r");
 
@@ -587,18 +686,30 @@ static struct library *read_a_lib(const char *y, const char *dir_name)
             return NULL;
         }
 
+        if (section) {
+            secfp = lib_section_stream(newfp, section, &first_line);
+            if (secfp) {
+                fclose(newfp);
+                newfp = secfp;
+            } else {
+                rewind(newfp);
+                first_line = 1;
+            }
+        }
+
         /* lib points to a new entry in global lib array
          * libraries[N_LIBRARIES] */
         lib = new_lib();
 
         lib->realpath = copy(yy);
         lib->habitat = ngdirname(yy);
+        lib->section = secfp ? copy(section) : NULL;
 
         lib->deck =
             inp_read(newfp, 1 /*dummy*/, lib->habitat, lib->realpath, FALSE, FALSE).cc;
 
         struct card* tmpdeck;
-        int cnumber = 1;
+        int cnumber = first_line;
         for (tmpdeck = lib->deck; tmpdeck; tmpdeck = tmpdeck->nextcard)
             tmpdeck->linenum_orig = cnumber++;
 
@@ -3975,7 +4086,7 @@ static struct card *expand_section_ref(struct card *c, const char *dir_name)
         *s_e = '\0';
         *y_e = '\0';
 
-        lib = read_a_lib(s, dir_name);
+        lib = read_a_lib(s, dir_name, y);
 
         if (!lib) {
             fprintf(stderr, "ERROR, library file %s not found\n", s);
