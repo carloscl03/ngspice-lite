@@ -288,10 +288,25 @@ int cieqn(const char *p, const char *s, size_t n)
 
 
 /* Case insensitive prefix. */
+/* fork-lite: ciprefix() is called tens of millions of times while a PDK
+   netlist is read (one chain of dot-command checks per line); a lookup
+   table replaces the two tolower_c() calls per character, same result. */
+static unsigned char ci_lower[256];
+static int ci_lower_ready;
+
 int ciprefix(const char *p, const char *s)
 {
-    for (; *p; p++, s++)
-        if (tolower_c(*p) != tolower_c(*s)) {
+    const unsigned char *up = (const unsigned char *) p;
+    const unsigned char *us = (const unsigned char *) s;
+
+    if (!ci_lower_ready) {
+        int i;
+        for (i = 0; i < 256; i++)
+            ci_lower[i] = (unsigned char) tolower_c((char) i);
+        ci_lower_ready = 1;
+    }
+    for (; *up; up++, us++)
+        if (ci_lower[*up] != ci_lower[*us]) {
             return FALSE;
         }
 

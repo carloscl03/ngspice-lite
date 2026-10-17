@@ -2424,7 +2424,11 @@ static char *readline(FILE *fd)
     strptr = TMALLOC(char, memlen);
     memlen -= 1; /* Save constant -1's in while loop */
 
+#if defined(__unix__) || defined(__APPLE__)
+    while ((c = getc_unlocked(fd)) != EOF) {   /* fork-lite: no lock per char */
+#else
     while ((c = getc(fd)) != EOF) {
+#endif
 
         if (strlen == 0 && (c == '\t' || c == ' ')) /* Leading spaces away */
             continue;
@@ -8703,6 +8707,7 @@ static void inp_quote_params(struct card *c, struct card *end_c,
         struct dependency *deps, int num_params)
 {
     bool in_control = FALSE;
+    int start_off = 0;
 
     if (cp_getvar("no_auto_braces", CP_BOOL, NULL, 0))
         return;
@@ -8737,12 +8742,20 @@ static void inp_quote_params(struct card *c, struct card *end_c,
         if (strchr("fhmouydqjzswx", *curr_line))
             num_terminals++;
 
+        /* fork-lite: the terminals are the same for every parameter, so
+           find where they end once per line instead of once per
+           (line, parameter) pair: with thousands of PDK parameters this
+           loop dominated the time spent here */
+        {
+            char *s0 = curr_line;
+            for (j = 0; j < num_terminals + 1; j++)
+                s0 = skip_token(s0);
+            start_off = (int) (s0 - curr_line);
+        }
+
         for (i = 0; i < num_params; i++) {
 
-            char *s = curr_line;
-
-            for (j = 0; j < num_terminals + 1; j++)
-                s = skip_token(s);
+            char *s = curr_line + start_off;
 
             while ((s = ya_search_identifier(
                             s, deps[i].param_name, curr_line)) != NULL) {
