@@ -3706,6 +3706,13 @@ static void inp_stripcomments_line(char *s, bool cs, bool inc)
         return;
     }
 
+    /* fork-lite: a line without quotes, ';', '$' or '/' has nothing the
+       scan below could act on; only the trailing white space is removed.
+       strpbrk() is vectorised in libc, the per-character scan is not. */
+    if (!strpbrk(s, "\"';$/")) {
+        d = s + strlen(s);
+    } else {
+
     if (inc) {
         d = nexttok(d);
         if (*d == '$')
@@ -3758,6 +3765,8 @@ static void inp_stripcomments_line(char *s, bool cs, bool inc)
             break;
         }
     }
+    }   /* fork-lite: end of the slow path */
+
     /* d now points to the first comment character or the null at the string
      * end */
 
