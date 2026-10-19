@@ -30,7 +30,11 @@ NIreinit( CKTcircuit *ckt)
 
 #ifdef KLU
     if (ckt->CKTmatrix->CKTkluMODE) {
-        size = (int)ckt->CKTmatrix->SMPkluMatrix->KLUmatrixNrhs;
+        /* KLUmatrixNrhs is the compacted size + 1. The loads index these
+         * vectors with the circuit node numbers, which may be larger when
+         * SMPpreOrder dropped more than one empty column: take the larger. */
+        if ((int)ckt->CKTmatrix->SMPkluMatrix->KLUmatrixNrhs > size)
+            size = (int)ckt->CKTmatrix->SMPkluMatrix->KLUmatrixNrhs;
     }
 #endif
 
