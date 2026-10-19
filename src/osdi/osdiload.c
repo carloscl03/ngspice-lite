@@ -64,6 +64,21 @@ static void eval(const OsdiDescriptor *descr, const GENinstance *gen_inst,
   extra_inst_data->eval_flags = descr->eval(&handle, inst, model, sim_info);
 }
 
+#ifdef USE_OMP
+#include "ngspice/ngpool.h"
+struct OsdiPoolItem { GENinstance *gen_inst; void *inst; OsdiExtraInstData *extra; void *model; };
+struct OsdiPoolJob { const OsdiDescriptor *descr; struct OsdiPoolItem *items; void *sim_info; };
+static struct OsdiPoolItem *osdi_pool_items;
+static int osdi_pool_cap;
+static int osdi_pool_eval(int idx, void *arg)
+{
+  struct OsdiPoolJob *j = (struct OsdiPoolJob *) arg;
+  struct OsdiPoolItem *it = &j->items[idx];
+  eval(j->descr, it->gen_inst, it->inst, it->extra, it->model, j->sim_info);
+  return 0;
+}
+#endif
+
 static void load(CKTcircuit *ckt, const GENinstance *gen_inst, void *model,
                  void *inst, OsdiExtraInstData *extra_inst_data, bool is_tran,
                  bool is_init_tran, const OsdiDescriptor *descr) {
@@ -186,6 +201,40 @@ extern int OSDIload(GENmodel *inModel, CKTcircuit *ckt) {
 #ifdef USE_OMP
   int ret = OK;
 
+  if (ngpool_threads() > 1) {
+    /* fork-lite: flatten the instance lists once per call and run them
+     * through the persistent pool instead of one OpenMP task each */
+    int n = 0;
+    for (gen_model = inModel; gen_model; gen_model = gen_model->GENnextModel)
+      for (gen_inst = gen_model->GENinstances; gen_inst;
+           gen_inst = gen_inst->GENnextInstance)
+        n++;
+    if (n > osdi_pool_cap) {
+      osdi_pool_cap = n + 64;
+      osdi_pool_items = TREALLOC(struct OsdiPoolItem, osdi_pool_items, osdi_pool_cap);
+    }
+    n = 0;
+    for (gen_model = inModel; gen_model; gen_model = gen_model->GENnextModel) {
+      void *model = osdi_model_data(gen_model);
+      for (gen_inst = gen_model->GENinstances; gen_inst;
+           gen_inst = gen_inst->GENnextInstance) {
+        struct OsdiPoolItem *it = &osdi_pool_items[n++];
+        it->gen_inst = gen_inst;
+        it->inst = osdi_instance_data(entry, gen_inst);
+        it->extra = osdi_extra_instance_data(entry, gen_inst);
+        it->model = model;
+      }
+    }
+    if (n >= ckt->CKTompMinInst) {
+      struct OsdiPoolJob job = { descr, osdi_pool_items, &sim_info };
+      ngpool_run(n, osdi_pool_eval, &job);
+    } else {
+      for (int i = 0; i < n; i++) {
+        struct OsdiPoolItem *it = &osdi_pool_items[i];
+        eval(descr, it->gen_inst, it->inst, it->extra, it->model, &sim_info);
+      }
+    }
+  } else
   /* use openmp 3.0 tasks to parallelize linked list transveral */
 #pragma omp parallel
 #pragma omp single
