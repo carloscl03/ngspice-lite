@@ -143,6 +143,7 @@ void SMPconvertCOOtoCSC (SMPmatrix *Matrix)
     if (Matrix->SMPkluMatrix->KLUmatrixLinkedListNZ == 0) {
         /* Assign N and NZ */
         Matrix->SMPkluMatrix->KLUmatrixN = 0 ;
+        Matrix->SMPkluMatrix->KLUmatrixNfull = 0 ;
         Matrix->SMPkluMatrix->KLUmatrixNrhs = 0 ;
         Matrix->SMPkluMatrix->KLUmatrixNZ = 0 ;
 
@@ -210,6 +211,7 @@ void SMPconvertCOOtoCSC (SMPmatrix *Matrix)
 
     /* Look for columns with all structural zeroes, not numerical zeroes - Circuits Matrix are NxN, so checking for columns is sufficient */
     unsigned int n = MatrixCOO [Matrix->SMPkluMatrix->KLUmatrixLinkedListNZ - 1].col + 1 ;
+    Matrix->SMPkluMatrix->KLUmatrixNfull = n ;
 //    Matrix->SMPkluMatrix->KLUmatrixNodeCollapsingOldToNew = (unsigned int *) malloc ((n + 1) * sizeof (unsigned int)) ;
     Matrix->SMPkluMatrix->KLUmatrixNodeCollapsingNewToOld = (unsigned int *) malloc ((n + 1) * sizeof (unsigned int)) ;
     for (i = 0 ; i < Matrix->SMPkluMatrix->KLUmatrixLinkedListNZ ; i++) {
@@ -1075,6 +1077,10 @@ int
 SMPmatSize (SMPmatrix *Matrix)
 {
     if (Matrix->CKTkluMODE) {
+        /* The RHS and state vectors are indexed with the circuit node numbers,
+         * which include nodes whose empty column SMPpreOrder removed. */
+        if (Matrix->SMPkluMatrix->KLUmatrixNfull > Matrix->SMPkluMatrix->KLUmatrixN)
+            return (int)Matrix->SMPkluMatrix->KLUmatrixNfull ;
         return (int)Matrix->SMPkluMatrix->KLUmatrixN ;
     } else {
         return spGetSize (Matrix->SPmatrix, 1) ;
@@ -1107,6 +1113,7 @@ SMPnewMatrix (SMPmatrix *Matrix, int size)
         Matrix->SMPkluMatrix->KLUmatrixIntermediate = NULL ;
         Matrix->SMPkluMatrix->KLUmatrixIntermediateComplex = NULL ;
         Matrix->SMPkluMatrix->KLUmatrixNZ = 0 ;
+        Matrix->SMPkluMatrix->KLUmatrixNfull = 0 ;
         Matrix->SMPkluMatrix->KLUmatrixBindStructCOO = NULL ;
 //        Matrix->SMPkluMatrix->KLUmatrixNodeCollapsingOldToNew = NULL ;
         Matrix->SMPkluMatrix->KLUmatrixNodeCollapsingNewToOld = NULL ;
@@ -1152,6 +1159,7 @@ SMPnewMatrixKLUforCIDER (SMPmatrix *Matrix, int size, unsigned int KLUmatrixIsCo
         }
         Matrix->SMPkluMatrix->KLUmatrixIntermediateComplex = NULL ;
         Matrix->SMPkluMatrix->KLUmatrixNZ = 0 ;
+        Matrix->SMPkluMatrix->KLUmatrixNfull = 0 ;
         Matrix->SMPkluMatrix->KLUmatrixBindStructForCIDER = NULL ;
         Matrix->SMPkluMatrix->KLUmatrixValueComplexCOOforCIDER = NULL ;
 

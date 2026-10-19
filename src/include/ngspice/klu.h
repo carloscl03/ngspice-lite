@@ -976,6 +976,7 @@ typedef struct sKLUmatrix {
     double *KLUmatrixIntermediate ;                 /* KLU RHS Intermediate for Solve Real Step */
     double *KLUmatrixIntermediateComplex ;          /* KLU iRHS Intermediate for Solve Complex Step */
     unsigned int KLUmatrixN ;                       /* KLU N */
+    unsigned int KLUmatrixNfull ;                   /* N before empty columns were dropped (node count seen by the loads) */
     unsigned int KLUmatrixNrhs ;                    /* KLU N for RHS - needed by Node Collapsing */
     unsigned int KLUmatrixNZ ;                      /* KLU nz */
     BindElement *KLUmatrixBindStructCOO ;           /* KLU COO Binding Structure */
