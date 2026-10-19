@@ -23,6 +23,7 @@ Author: 1985 Thomas L. Quarles
 #ifdef USE_OMP
 #include <omp.h>
 #include "ngspice/cpextern.h"
+#include "ngspice/ngpool.h"
 #endif
 
 #define CKALLOC(var,size,type) \
@@ -91,6 +92,11 @@ CKTsetup(CKTcircuit *ckt)
         nthreads = 2;
 
     omp_set_num_threads(nthreads);
+
+    /* fork-lite: persistent pool for the device load loops; OpenMP then
+       keeps one thread so its remaining regions do not compete with it */
+    if (ngpool_configure(nthreads) > 1)
+        omp_set_num_threads(1);
 
     /* fork-lite: with few instances the fork/join and spin-wait cost of a
        parallel region exceeds the work (59 MOSFETs: 8 threads was 40 % slower

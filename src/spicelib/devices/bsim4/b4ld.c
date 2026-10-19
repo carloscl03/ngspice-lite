@@ -24,6 +24,7 @@ standard can be found at: http://www.si2.org/cmc
 
 #include "ngspice/ngspice.h"
 #include "ngspice/cktdefs.h"
+#include "ngspice/ngpool.h"
 #include "bsim4def.h"
 #include "ngspice/trandefs.h"
 #include "ngspice/const.h"
@@ -74,6 +75,14 @@ static void BSIM4LoadTraceReport(void) {
 }
 #endif
 
+#ifdef USE_OMP
+static int BSIM4PoolItem(int idx, void *arg)
+{
+    struct ngpool_devjob *j = (struct ngpool_devjob *) arg;
+    return BSIM4LoadOMP((BSIM4instance *) j->inst[idx], j->ckt);
+}
+#endif
+
 int
 BSIM4load(
 GENmodel *inModel,
@@ -92,12 +101,18 @@ CKTcircuit *ckt)
     double lt_t0 = 0, lt_t1 = 0;
     if (!lt_init) { lt_init = 1; lt_on = getenv("NGSPICE_LOADTRACE") != NULL; if (lt_on) atexit(BSIM4LoadTraceReport); }
     if (lt_on) lt_t0 = SPfrontEnd->IFseconds();
+    /* fork-lite: persistent pool instead of a fork/join region per call */
+    if (ngpool_threads() > 1 && model->BSIM4InstCount >= ckt->CKTompMinInst) {
+        struct ngpool_devjob job = { (void **) InstArray, ckt };
+        error = ngpool_run(model->BSIM4InstCount, BSIM4PoolItem, &job);
+    } else {
 #pragma omp parallel for if (model->BSIM4InstCount >= ckt->CKTompMinInst)
     for (idx = 0; idx < model->BSIM4InstCount; idx++) {
         BSIM4instance *here = InstArray[idx];
         int local_error = BSIM4LoadOMP(here, ckt);
         if (local_error)
             error = local_error;
+    }
     }
     if (lt_on) lt_t1 = SPfrontEnd->IFseconds();
 

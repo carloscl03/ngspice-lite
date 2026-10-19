@@ -16,6 +16,7 @@
 
 #include "ngspice/ngspice.h"
 #include "ngspice/cktdefs.h"
+#include "ngspice/ngpool.h"
 #include "bsim4v5def.h"
 #include "ngspice/trandefs.h"
 #include "ngspice/const.h"
@@ -61,11 +62,30 @@ int BSIM4v5polyDepletion(double phi, double ngate,double coxe, double Vgs, doubl
 #include <omp.h>
 static double lt_eval_g, lt_stamp_g; static long lt_calls_g; static int lt_inst_g;
 static double lt_busy_g[16]; static int lt_nth_g, lt_max_g, lt_min_g;
+#define LT_MAX 400000
+static double *lt_ev, *lt_gap, lt_prev_end = -1; static long lt_nev;
+static int lt_cmp(const void *a, const void *b) { double x = *(const double *)a, y = *(const double *)b; return (x > y) - (x < y); }
+static void lt_pct(const char *what, double *v, long n) {
+    if (n < 10) return;
+    qsort(v, (size_t)n, sizeof(double), lt_cmp);
+    fprintf(stderr, "LOADTRACE   %-10s n=%ld  min=%.1f p10=%.1f p50=%.1f p90=%.1f us\n", what, n,
+            1e6*v[0], 1e6*v[n/10], 1e6*v[n/2], 1e6*v[(9*n)/10]);
+}
 static void BSIM4v5LoadTraceReport(void) {
     fprintf(stderr, "LOADTRACE bsim4v5: team=%d max_threads=%d omp_min_inst=%d calls=%ld inst=%d eval=%.3fs (%.1fus/call) stamp=%.3fs (%.1fus/call)\n",
             lt_nth_g, lt_max_g, lt_min_g, lt_calls_g, lt_inst_g, lt_eval_g, 1e6*lt_eval_g/(lt_calls_g?lt_calls_g:1), lt_stamp_g, 1e6*lt_stamp_g/(lt_calls_g?lt_calls_g:1));
     for (int th = 0; th < 16; th++) if (lt_busy_g[th] > 0)
         fprintf(stderr, "LOADTRACE   thread %d busy %.1f us/call\n", th, 1e6*lt_busy_g[th]/(lt_calls_g?lt_calls_g:1));
+    lt_pct("region", lt_ev, lt_nev);
+    lt_pct("gap", lt_gap, lt_nev > 0 ? lt_nev - 1 : 0);
+}
+#endif
+
+#ifdef USE_OMP
+static int BSIM4v5PoolItem(int idx, void *arg)
+{
+    struct ngpool_devjob *j = (struct ngpool_devjob *) arg;
+    return BSIM4v5LoadOMP((BSIM4v5instance *) j->inst[idx], j->ckt);
 }
 #endif
 
@@ -86,7 +106,15 @@ CKTcircuit *ckt)
     static int lt_init = 0, lt_on = 0;
     double lt_t0 = 0, lt_t1 = 0;
     if (!lt_init) { lt_init = 1; lt_on = getenv("NGSPICE_LOADTRACE") != NULL; if (lt_on) atexit(BSIM4v5LoadTraceReport); }
-    if (lt_on) { lt_t0 = SPfrontEnd->IFseconds(); lt_max_g = omp_get_max_threads(); lt_min_g = ckt->CKTompMinInst; }
+    if (lt_on) { lt_t0 = SPfrontEnd->IFseconds(); lt_max_g = omp_get_max_threads(); lt_min_g = ckt->CKTompMinInst;
+        if (!lt_ev) { lt_ev = malloc(LT_MAX * sizeof(double)); lt_gap = malloc(LT_MAX * sizeof(double)); }
+        if (lt_prev_end >= 0 && lt_nev > 0 && lt_nev < LT_MAX) lt_gap[lt_nev - 1] = lt_t0 - lt_prev_end; }
+    /* fork-lite: persistent pool instead of a fork/join region per call */
+    if (ngpool_threads() > 1 && model->BSIM4v5InstCount >= ckt->CKTompMinInst) {
+        struct ngpool_devjob job = { (void **) InstArray, ckt };
+        error = ngpool_run(model->BSIM4v5InstCount, BSIM4v5PoolItem, &job);
+            if (lt_on) lt_nth_g = ngpool_threads();
+    } else {
 #pragma omp parallel if (model->BSIM4v5InstCount >= ckt->CKTompMinInst)
     {
         double th_t0 = lt_on ? omp_get_wtime() : 0;
@@ -100,9 +128,10 @@ CKTcircuit *ckt)
         if (lt_on) { int th = omp_get_thread_num(); if (th < 16) lt_busy_g[th] += omp_get_wtime() - th_t0; if (th == 0) lt_nth_g = omp_get_num_threads(); }
     }
 
-    if (lt_on) lt_t1 = SPfrontEnd->IFseconds();
+    }
+    if (lt_on) { lt_t1 = SPfrontEnd->IFseconds(); if (lt_nev < LT_MAX) lt_ev[lt_nev++] = lt_t1 - lt_t0; }
     BSIM4v5LoadRhsMat(inModel, ckt);
-    if (lt_on) { lt_eval_g += lt_t1 - lt_t0; lt_stamp_g += SPfrontEnd->IFseconds() - lt_t1; lt_calls_g++; lt_inst_g = model->BSIM4v5InstCount; }
+    if (lt_on) { lt_prev_end = SPfrontEnd->IFseconds(); lt_eval_g += lt_t1 - lt_t0; lt_stamp_g += lt_prev_end - lt_t1; lt_calls_g++; lt_inst_g = model->BSIM4v5InstCount; }
 
     return error;
 }

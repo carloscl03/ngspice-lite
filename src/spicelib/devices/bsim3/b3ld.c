@@ -14,6 +14,7 @@
 
 #include "ngspice/ngspice.h"
 #include "ngspice/cktdefs.h"
+#include "ngspice/ngpool.h"
 #include "bsim3def.h"
 #include "ngspice/trandefs.h"
 #include "ngspice/const.h"
@@ -38,6 +39,14 @@ void BSIM3LoadRhsMat(GENmodel *inModel, CKTcircuit *ckt);
 #endif
 
 
+#ifdef USE_OMP
+static int BSIM3PoolItem(int idx, void *arg)
+{
+    struct ngpool_devjob *j = (struct ngpool_devjob *) arg;
+    return BSIM3LoadOMP((BSIM3instance *) j->inst[idx], j->ckt);
+}
+#endif
+
 int
 BSIM3load(
 GENmodel *inModel,
@@ -50,12 +59,18 @@ CKTcircuit *ckt)
     BSIM3instance **InstArray;
     InstArray = model->BSIM3InstanceArray;
 
+    /* fork-lite: persistent pool instead of a fork/join region per call */
+    if (ngpool_threads() > 1 && model->BSIM3InstCount >= ckt->CKTompMinInst) {
+        struct ngpool_devjob job = { (void **) InstArray, ckt };
+        error = ngpool_run(model->BSIM3InstCount, BSIM3PoolItem, &job);
+    } else {
 #pragma omp parallel for if (model->BSIM3InstCount >= ckt->CKTompMinInst)
     for (idx = 0; idx < model->BSIM3InstCount; idx++) {
         BSIM3instance *here = InstArray[idx];
         int local_error = BSIM3LoadOMP(here, ckt);
         if (local_error)
             error = local_error;
+    }
     }
 
     BSIM3LoadRhsMat(inModel, ckt);

@@ -20,6 +20,7 @@
 #include "ngspice/ngspice.h"
 
 #include "ngspice/cktdefs.h"
+#include "ngspice/ngpool.h"
 #include "b4soidef.h"
 #include "ngspice/trandefs.h"
 #include "ngspice/const.h"
@@ -101,6 +102,14 @@ B4SOIlimit(
 }
 
 
+#ifdef USE_OMP
+static int B4SOIPoolItem(int idx, void *arg)
+{
+    struct ngpool_devjob *j = (struct ngpool_devjob *) arg;
+    return B4SOILoadOMP((B4SOIinstance *) j->inst[idx], j->ckt);
+}
+#endif
+
 int
 B4SOIload(
     GENmodel *inModel,
@@ -113,12 +122,18 @@ B4SOIload(
     B4SOIinstance **InstArray;
     InstArray = model->B4SOIInstanceArray;
 
+    /* fork-lite: persistent pool instead of a fork/join region per call */
+    if (ngpool_threads() > 1 && model->B4SOIInstCount >= ckt->CKTompMinInst) {
+        struct ngpool_devjob job = { (void **) InstArray, ckt };
+        error = ngpool_run(model->B4SOIInstCount, B4SOIPoolItem, &job);
+    } else {
 #pragma omp parallel for if (model->B4SOIInstCount >= ckt->CKTompMinInst)
     for (idx = 0; idx < model->B4SOIInstCount; idx++) {
         B4SOIinstance *here = InstArray[idx];
         int local_error = B4SOILoadOMP(here, ckt);
         if (local_error)
             error = local_error;
+    }
     }
 
     B4SOILoadRhsMat(inModel, ckt);

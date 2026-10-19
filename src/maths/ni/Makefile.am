@@ -4,6 +4,7 @@ noinst_LTLIBRARIES = libni.la
 
 libni_la_SOURCES = \
 		niaciter.c	\
+		ngpool.c	\
 		nicomcof.c	\
 		niconv.c	\
 		nidest.c	\

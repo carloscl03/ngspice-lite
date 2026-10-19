@@ -24,6 +24,7 @@
 
 #include "ngspice/ngspice.h"
 #include "ngspice/cktdefs.h"
+#include "ngspice/ngpool.h"
 #include "bsim4v6def.h"
 #include "ngspice/trandefs.h"
 #include "ngspice/const.h"
@@ -68,6 +69,14 @@ void BSIM4v6LoadRhsMat(GENmodel *inModel, CKTcircuit *ckt);
 
 int BSIM4v6polyDepletion(double phi, double ngate,double epsgate, double coxe, double Vgs, double *Vgs_eff, double *dVgs_eff_dVg);
 
+#ifdef USE_OMP
+static int BSIM4v6PoolItem(int idx, void *arg)
+{
+    struct ngpool_devjob *j = (struct ngpool_devjob *) arg;
+    return BSIM4v6LoadOMP((BSIM4v6instance *) j->inst[idx], j->ckt);
+}
+#endif
+
 int
 BSIM4v6load(
 GENmodel *inModel,
@@ -80,12 +89,18 @@ CKTcircuit *ckt)
     BSIM4v6instance **InstArray;
     InstArray = model->BSIM4v6InstanceArray;
 
+    /* fork-lite: persistent pool instead of a fork/join region per call */
+    if (ngpool_threads() > 1 && model->BSIM4v6InstCount >= ckt->CKTompMinInst) {
+        struct ngpool_devjob job = { (void **) InstArray, ckt };
+        error = ngpool_run(model->BSIM4v6InstCount, BSIM4v6PoolItem, &job);
+    } else {
 #pragma omp parallel for if (model->BSIM4v6InstCount >= ckt->CKTompMinInst)
     for (idx = 0; idx < model->BSIM4v6InstCount; idx++) {
         BSIM4v6instance *here = InstArray[idx];
         int local_error = BSIM4v6LoadOMP(here, ckt);
         if (local_error)
             error = local_error;
+    }
     }
 
     BSIM4v6LoadRhsMat(inModel, ckt);

@@ -56,6 +56,7 @@ to others."
 
 #include "ngspice/ngspice.h"
 #include "ngspice/cktdefs.h"
+#include "ngspice/ngpool.h"
 #include "hsm2def.h"
 #include "hisim2.h"
 #include "ngspice/trandefs.h"
@@ -218,6 +219,14 @@ static void ShowPhysVals
   }
 }
 
+#ifdef USE_OMP
+static int HSM2PoolItem(int idx, void *arg)
+{
+    struct ngpool_devjob *j = (struct ngpool_devjob *) arg;
+    return HSM2LoadOMP((HSM2instance *) j->inst[idx], j->ckt);
+}
+#endif
+
 int HSM2load(
      GENmodel *inModel,
      CKTcircuit *ckt)
@@ -232,12 +241,18 @@ int HSM2load(
     HSM2instance **InstArray;
     InstArray = model->HSM2InstanceArray;
 
+    /* fork-lite: persistent pool instead of a fork/join region per call */
+    if (ngpool_threads() > 1 && model->HSM2InstCount >= ckt->CKTompMinInst) {
+        struct ngpool_devjob job = { (void **) InstArray, ckt };
+        error = ngpool_run(model->HSM2InstCount, HSM2PoolItem, &job);
+    } else {
 #pragma omp parallel for if (model->HSM2InstCount >= ckt->CKTompMinInst)
     for (idx = 0; idx < model->HSM2InstCount; idx++) {
         HSM2instance *here = InstArray[idx];
         int local_error = HSM2LoadOMP(here, ckt);
         if (local_error)
             error = local_error;
+    }
     }
 
     HSM2LoadRhsMat(inModel, ckt);
