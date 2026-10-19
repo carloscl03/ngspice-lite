@@ -84,8 +84,26 @@ NIconvTest(CKTcircuit *ckt)
     /* The individual testers, called by CKTconvTest, set
      * ckt->CKTnoncon and ckt->CKTtroubleElt appropriately. */
     if (ckt->CKTnoncon != 0) {
-        ckt->CKTtroubleNode = 0;
-        return(1);
+        /* fork-lite: the node voltages converged, only device current tests
+         * failed. curconv=0 ignores them (ngspice <= 46), 1 insists (47),
+         * 2 insists until they have failed curconvmax consecutive times, then accepts until they pass again (see CKTsetup) */
+        int give_up = ckt->CKTcurConv == 0 ||
+            (ckt->CKTcurConv == 2 && ++ckt->CKTcurConvFails >= ckt->CKTcurConvMax);
+        static int shown = 0;
+        if (shown < 40 && getenv("NGSPICE_STEPTRACE")) {
+            shown++;
+            fprintf(stderr, "ST CURNONCONV t=%.6e elt=%s fails=%d%s\n", ckt->CKTtime,
+                    ckt->CKTtroubleElt ? ckt->CKTtroubleElt->GENname : "?",
+                    ckt->CKTcurConvFails, give_up ? " (accepted)" : "");
+        }
+        if (!give_up) {
+            ckt->CKTtroubleNode = 0;
+            return(1);
+        }
+        ckt->CKTnoncon = 0;
+    } else {
+        /* currents converged: insist on them again from now on */
+        ckt->CKTcurConvFails = 0;
     }
     /* CKTconvTest early-returns nonzero 'i' on the first error
      * in evaluating convergence (such as parameter out of range) so

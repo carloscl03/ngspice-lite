@@ -15,6 +15,7 @@ Author: 1985 Thomas L. Quarles
 #include "ngspice/devdefs.h"
 #include "ngspice/sperror.h"
 #include "ngspice/fteext.h"
+#include "ngspice/cpextern.h"
 
 #ifdef XSPICE
 #include "ngspice/enh.h"
@@ -84,6 +85,18 @@ CKTsetup(CKTcircuit *ckt)
         return(error);
 
     ckt->CKTisSetup = 1;
+
+    /* fork-lite: ngspice 47 started to honour the per-device current
+       convergence tests (commit 0638aaa16). With a stiff B-source such as a
+       memristor state equation (dI/dV ~ 1e5 A/V) the absolute tolerance
+       abstol can never be met and Newton loops for ever: a 4-synapse spike
+       net that ngspice 46 finished in 26 s never got past t = 1.3 us.
+       Default: require the tests, but give up on them after curconvmax
+       consecutive iterations in which only they fail, until they pass again. */
+    if (!cp_getvar("curconv", CP_NUM, &ckt->CKTcurConv, 0))
+        ckt->CKTcurConv = 2;
+    if (!cp_getvar("curconvmax", CP_NUM, &ckt->CKTcurConvMax, 0))
+        ckt->CKTcurConvMax = 10;
 
     matrix = ckt->CKTmatrix;
 

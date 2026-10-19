@@ -201,6 +201,12 @@ struct CKTcircuit {
     int CKTbypass;              /* bypass option, how does it work ?  */
     int CKTompMinInst;          /* fork-lite: min. instances per model before a
                                    device load loop goes parallel (omp_min_inst) */
+    int CKTcurConv;              /* fork-lite: device current convergence tests:
+                                   0 = ignored (ngspice <= 46), 1 = required (47),
+                                   2 = required unless they alone keep failing
+                                   CKTcurConvMax times in a step (default); `set curconv` */
+    int CKTcurConvMax;           /* `set curconvmax`, default 10 */
+    int CKTcurConvFails;         /* consecutive current-only failures (reset when they pass) */
     int CKTdcMaxIter;           /* iteration limit for dc op.  (itl1) */
     int CKTdcTrcvMaxIter;       /* iteration limit for dc tran. curv
                                    (itl2) */
