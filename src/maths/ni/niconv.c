@@ -56,6 +56,17 @@ NIconvTest(CKTcircuit *ckt)
             tol =  ckt->CKTreltol * (MAX(fabs(old),fabs(new))) +
                     ckt->CKTvoltTol;
             if (fabs(new-old) >tol ) {
+                /* fork-lite diagnostic: NGSPICE_VTRACE=t0 tabulates, from time t0 on,
+                   the first node failing the voltage test at each iteration */
+                {
+                    static double vt0 = -1; static long vshown = 0;
+                    if (vt0 < 0) { const char *e = getenv("NGSPICE_VTRACE"); vt0 = e ? atof(e) : 1e300; }
+                    if (ckt->CKTtime >= vt0 && vshown < 400) {
+                        vshown++;
+                        fprintf(stderr, "ST VNONCONV t=%.6e h=%.3e it=%d node=%s new=%.9e old=%.9e diff=%.3e tol=%.3e\n",
+                                ckt->CKTtime, ckt->CKTdelta, ckt->CKTstat->STATnumIter, CKTnodName(ckt, i), new, old, new-old, tol);
+                    }
+                }
 #ifdef STEPDEBUG
                 printf(" non-convergence at node (type=3) %s (fabs(new-old)>tol --> fabs(%g-%g)>%g)\n",CKTnodName(ckt,i),new,old,tol);
                 printf("    reltol: %g    voltTol: %g   (tol=reltol*(MAX(fabs(old),fabs(new))) + voltTol)\n",ckt->CKTreltol,ckt->CKTvoltTol);
@@ -68,6 +79,15 @@ NIconvTest(CKTcircuit *ckt)
             tol =  ckt->CKTreltol * (MAX(fabs(old),fabs(new))) +
                     ckt->CKTabstol;
             if (fabs(new-old) >tol ) {
+                {
+                    static double it0 = -1; static long ishown = 0;
+                    if (it0 < 0) { const char *e = getenv("NGSPICE_VTRACE"); it0 = e ? atof(e) : 1e300; }
+                    if (ckt->CKTtime >= it0 && ishown < 300) {
+                        ishown++;
+                        fprintf(stderr, "ST INONCONV t=%.6e h=%.3e it=%d branch=%s new=%.9e old=%.9e diff=%.3e tol=%.3e\n",
+                                ckt->CKTtime, ckt->CKTdelta, ckt->CKTstat->STATnumIter, CKTnodName(ckt, i), new, old, new-old, tol);
+                    }
+                }
 #ifdef STEPDEBUG
                 printf(" non-convergence at node (type=%d) %s (fabs(new-old)>tol --> fabs(%g-%g)>%g)\n",node->type,CKTnodName(ckt,i),new,old,tol);
                 printf("    reltol: %g    abstol: %g   (tol=reltol*(MAX(fabs(old),fabs(new))) + abstol)\n",ckt->CKTreltol,ckt->CKTabstol);
@@ -90,7 +110,7 @@ NIconvTest(CKTcircuit *ckt)
         int give_up = ckt->CKTcurConv == 0 ||
             (ckt->CKTcurConv == 2 && ++ckt->CKTcurConvFails >= ckt->CKTcurConvMax);
         static int shown = 0;
-        if (shown < 40 && getenv("NGSPICE_STEPTRACE")) {
+        if (shown < 40 && getenv("NGSPICE_STEPTRACE") && !getenv("NGSPICE_VTRACE")) {
             shown++;
             fprintf(stderr, "ST CURNONCONV t=%.6e elt=%s fails=%d%s\n", ckt->CKTtime,
                     ckt->CKTtroubleElt ? ckt->CKTtroubleElt->GENname : "?",

@@ -289,10 +289,31 @@ NIiter(CKTcircuit *ckt, int maxIter)
                 return(E_ITERLIM);
             }
 
+            /* fork-lite diagnostic: NGSPICE_VTRACE=t0 tabulates why each iteration
+               is declared non-converged (load limiting vs voltage/current tests) */
+            {
+                static double wt0 = -1; static long wshown = 0;
+                if (wt0 < 0) { const char *e = getenv("NGSPICE_VTRACE"); wt0 = e ? atof(e) : 1e300; }
+                if (ckt->CKTtime >= wt0 && wshown < 600) {
+                    int loadnc = ckt->CKTnoncon, conv = -1;
+                    if (loadnc == 0 && iterno != 1)
+                        conv = NIconvTest(ckt);
+                    wshown++;
+                    fprintf(stderr, "ST WHY t=%.6e it=%d loadnoncon=%d convtest=%d node=%s elt=%s\n", ckt->CKTtime, iterno,
+                            loadnc, conv, ckt->CKTtroubleNode ? CKTnodName(ckt, ckt->CKTtroubleNode) : "-",
+                            ckt->CKTtroubleElt ? ckt->CKTtroubleElt->GENname : "-");
+                    if (loadnc == 0 && iterno != 1)
+                        ckt->CKTnoncon = conv;
+                    else
+                        ckt->CKTnoncon = 1;
+                    goto why_done;
+                }
+            }
             if ((ckt->CKTnoncon == 0) && (iterno != 1))
                 ckt->CKTnoncon = NIconvTest(ckt);
             else
                 ckt->CKTnoncon = 1;
+            why_done:;
 
 #ifdef STEPDEBUG
             printf("noncon is %d\n", ckt->CKTnoncon);

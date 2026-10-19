@@ -3707,6 +3707,15 @@ finished:
           if ((here->BSIM4v5off == 0) || (!(ckt->CKTmode & MODEINITFIX)))
 	  {   if (Check == 1)
 	      {   ckt->CKTnoncon++;
+                  /* fork-lite diagnostic: NGSPICE_VTRACE=t0 tabulates the limited instances */
+                  {   static double lt0 = -1; static long shown = 0;
+                      if (lt0 < 0) { const char *e = getenv("NGSPICE_VTRACE"); lt0 = e ? atof(e) : 1e300; }
+                      if (ckt->CKTtime >= lt0 && shown < 300) {
+                          shown++;
+                          fprintf(stderr, "ST LIMIT t=%.6e inst=%s vgs=%.5e vds=%.5e vbs=%.5e von=%.4e vdsat=%.4e\n",
+                                  ckt->CKTtime, here->gen.GENname, vgs, vds, vbs, von, here->BSIM4v5vdsat);
+                      }
+                  }
 #ifndef NEWCONV
               } 
 	      else
