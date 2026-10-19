@@ -141,6 +141,23 @@ static void write_node_mapping(const OsdiDescriptor *descr, void *inst,
   }
 }
 
+/* flag the (collapsed) instance nodes that appear in at least one jacobian
+ * entry; the others never get a matrix element or a residual */
+static void mark_used_nodes(const OsdiDescriptor *descr, void *inst,
+                            uint8_t *used) {
+  uint32_t *node_mapping =
+      (uint32_t *)(((char *)inst) + descr->node_mapping_offset);
+  memset(used, 0, descr->num_nodes);
+  for (uint32_t i = 0; i < descr->num_jacobian_entries; i++) {
+    uint32_t n1 = node_mapping[descr->jacobian_entries[i].nodes.node_1];
+    uint32_t n2 = node_mapping[descr->jacobian_entries[i].nodes.node_2];
+    if (n1 != UINT32_MAX)
+      used[n1] = 1;
+    if (n2 != UINT32_MAX)
+      used[n2] = 1;
+  }
+}
+
 /* NGSPICE state vectors for an instance are always continous so we just write
  * state_start .. state_start + num_state to state_idx */
 static void write_state_ids(const OsdiDescriptor *descr, void *inst,
@@ -199,6 +216,7 @@ int OSDIsetup(SMPmatrix *matrix, GENmodel *inModel, CKTcircuit *ckt,
 
   /* setup a temporary buffer */
   uint32_t *node_ids = TMALLOC(uint32_t, descr->num_nodes);
+  uint8_t *node_used = TMALLOC(uint8_t, descr->num_nodes);
 
   /* determine the number of states required by each instance */
   int num_states = (int)descr->num_states;
@@ -263,8 +281,18 @@ int OSDIsetup(SMPmatrix *matrix, GENmodel *inModel, CKTcircuit *ckt,
       uint32_t num_nodes = collapse_nodes(descr, inst, connected_terminals);
       /* copy terminals */
       memcpy(node_ids, gen_inst + 1, sizeof(int) * connected_terminals);
+      /* An internal node that no contribution references has no matrix
+       * entries. Giving it a circuit node makes KLU (which drops
+       * structurally empty columns) report a matrix size smaller than
+       * the node count, so the RHS vectors are allocated too short and
+       * the loads write past them. Map such nodes to ground instead. */
+      mark_used_nodes(descr, inst, node_used);
       /* create internal nodes as required */
       for (uint32_t i = connected_terminals; i < num_nodes; i++) {
+        if (!node_used[i]) {
+          node_ids[i] = 0;
+          continue;
+        }
         // TODO handle currents  correctly
         if (descr->nodes[i].is_flow) {
           error = CKTmkCur(ckt, &tmp, gen_inst->GENname, descr->nodes[i].name);
@@ -292,6 +320,7 @@ int OSDIsetup(SMPmatrix *matrix, GENmodel *inModel, CKTcircuit *ckt,
   }
 
   free(node_ids);
+  free(node_used);
 
   return res;
 }
