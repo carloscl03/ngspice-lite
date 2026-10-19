@@ -20,14 +20,13 @@ Author: 1985 Thomas L. Quarles
 extern double PTfudge_factor;
 
 static int PTeval(INPparseNode * tree, double gmin, double *res,
-		  double *vals);
+		  double *vals, unsigned int gen);
 
-/* fork-lite: generation stamp, bumped once per IFeval() call. A node whose
-   cache_gen equals the current stamp has already been evaluated with the
-   same vals in this call and returns its cached value. Evaluation is
-   serial (ASRCload runs outside the OpenMP device loops), so a single
-   static counter is enough. */
-static unsigned int ptgen = 0;
+/* fork-lite: generation stamp, bumped once per IFeval() call and kept in
+   the tree. A node whose cache_gen equals the stamp has already been
+   evaluated with the same vals in this call and returns its cached value.
+   Trees share no nodes (CSE works within a tree), so different trees can
+   be evaluated concurrently by the worker pool. */
 
 
 
@@ -50,10 +49,12 @@ IFeval(IFparseTree * tree, double gmin, double *result, double *vals,
 	printf("\tvar%d = %lg\n", i, vals[i]);
 #endif
 
-    if (++ptgen == 0)
-        ptgen = 1;              /* 0 is the "never evaluated" stamp */
+    unsigned int gen;
+    if (++myTree->gen == 0)
+        myTree->gen = 1;        /* 0 is the "never evaluated" stamp */
+    gen = myTree->gen;
 
-    if ((err = PTeval(myTree->tree, gmin, result, vals)) != OK) {
+    if ((err = PTeval(myTree->tree, gmin, result, vals, gen)) != OK) {
         if (ft_ngdebug) {
             INPptPrint("calling PTeval, tree = ", tree);
             printf("values:");
@@ -66,7 +67,7 @@ IFeval(IFparseTree * tree, double gmin, double *result, double *vals,
     }
 
     for (i = 0; i < myTree->p.numVars; i++)
-        if ((err = PTeval(myTree->derivs[i], gmin, &derivs[i], vals)) != OK) {
+        if ((err = PTeval(myTree->derivs[i], gmin, &derivs[i], vals, gen)) != OK) {
             if (ft_ngdebug) {
                 INPptPrint("calling PTeval, tree = ", tree);
                 printf("results: function = %lg\n", *result);
@@ -88,7 +89,7 @@ IFeval(IFparseTree * tree, double gmin, double *result, double *vals,
 }
 
 static int
-PTeval(INPparseNode * tree, double gmin, double *res, double *vals)
+PTeval(INPparseNode * tree, double gmin, double *res, double *vals, unsigned int gen)
 {
     double r1, r2;
     int err;
@@ -96,7 +97,7 @@ PTeval(INPparseNode * tree, double gmin, double *res, double *vals)
     int cacheable = !tree->impure &&
                     tree->type != PT_CONSTANT && tree->type != PT_VAR;
 
-    if (cacheable && tree->cache_gen == ptgen) {
+    if (cacheable && tree->cache_gen == gen) {
         *res = tree->cache_val;
         return (OK);
     }
@@ -118,10 +119,10 @@ PTeval(INPparseNode * tree, double gmin, double *res, double *vals)
         case PTF_PWR:
         case PTF_MIN:
         case PTF_MAX:
-            err = PTeval(tree->left->left, gmin, &r1, vals);
+            err = PTeval(tree->left->left, gmin, &r1, vals, gen);
             if (err != OK)
                 return (err);
-            err = PTeval(tree->left->right, gmin, &r2, vals);
+            err = PTeval(tree->left->right, gmin, &r2, vals, gen);
             if (err != OK)
                 return (err);
             *res = PTbinary(tree -> function) (r1, r2);
@@ -133,7 +134,7 @@ PTeval(INPparseNode * tree, double gmin, double *res, double *vals)
         break;
         /* fcns with single argument */
         default:
-            err = PTeval(tree->left, gmin, &r1, vals);
+            err = PTeval(tree->left, gmin, &r1, vals, gen);
             if (err != OK)
                 return (err);
             if(tree->data == NULL)
@@ -155,12 +156,12 @@ PTeval(INPparseNode * tree, double gmin, double *res, double *vals)
         INPparseNode *arg2 = tree->right->left;
         INPparseNode *arg3 = tree->right->right;
 
-        err = PTeval(arg1, gmin, &r1, vals);
+        err = PTeval(arg1, gmin, &r1, vals, gen);
         if (err != OK)
           return (err);
 
         /*FIXME > 0.0, >= 0.5, != 0.0 or what ? */
-        err = PTeval((r1 != 0.0) ? arg2 : arg3, gmin, &r2, vals);
+        err = PTeval((r1 != 0.0) ? arg2 : arg3, gmin, &r2, vals, gen);
         if (err != OK)
            return (err);
 
@@ -173,10 +174,10 @@ PTeval(INPparseNode * tree, double gmin, double *res, double *vals)
     case PT_TIMES:
     case PT_DIVIDE:
     case PT_POWER:
-	err = PTeval(tree->left, gmin, &r1, vals);
+	err = PTeval(tree->left, gmin, &r1, vals, gen);
 	if (err != OK)
 	    return (err);
-	err = PTeval(tree->right, gmin, &r2, vals);
+	err = PTeval(tree->right, gmin, &r2, vals, gen);
 	if (err != OK)
 	    return (err);
 	*res = PTbinary(tree -> function) (r1, r2);
@@ -206,7 +207,7 @@ PTeval(INPparseNode * tree, double gmin, double *res, double *vals)
 
     if (cacheable) {
         tree->cache_val = *res;
-        tree->cache_gen = ptgen;
+        tree->cache_gen = gen;
     }
 
     return (OK);

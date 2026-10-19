@@ -31,6 +31,7 @@ typedef struct INPparseTree {
     IFparseTree p;
     struct INPparseNode *tree;  /* The real stuff. */
     struct INPparseNode **derivs;   /* The derivative parse trees. */
+    unsigned int gen;           /* fork-lite: memoisation stamp of the last IFeval() */
 } INPparseTree;
 
 /* This is what is passed as the actual parameter value.  The fields will all
