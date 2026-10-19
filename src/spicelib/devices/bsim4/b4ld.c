@@ -66,6 +66,14 @@ void BSIM4LoadRhsMat(GENmodel *inModel, CKTcircuit *ckt);
 
 int BSIM4polyDepletion(double phi, double ngate,double epsgate, double coxe, double Vgs, double *Vgs_eff, double *dVgs_eff_dVg);
 
+#ifdef USE_OMP
+static double lt_eval_g, lt_stamp_g; static long lt_calls_g; static int lt_inst_g;
+static void BSIM4LoadTraceReport(void) {
+    fprintf(stderr, "LOADTRACE bsim4: calls=%ld inst=%d eval=%.3fs (%.1fus/call) stamp=%.3fs (%.1fus/call)\n",
+            lt_calls_g, lt_inst_g, lt_eval_g, 1e6*lt_eval_g/(lt_calls_g?lt_calls_g:1), lt_stamp_g, 1e6*lt_stamp_g/(lt_calls_g?lt_calls_g:1));
+}
+#endif
+
 int
 BSIM4load(
 GENmodel *inModel,
@@ -78,6 +86,12 @@ CKTcircuit *ckt)
     BSIM4instance **InstArray;
     InstArray = model->BSIM4InstanceArray;
 
+    /* fork-lite diagnostic: NGSPICE_LOADTRACE=1 prints, at exit, the time spent
+     * in the parallel evaluation loop and in the serial stamping. */
+    static int lt_init = 0, lt_on = 0;
+    double lt_t0 = 0, lt_t1 = 0;
+    if (!lt_init) { lt_init = 1; lt_on = getenv("NGSPICE_LOADTRACE") != NULL; if (lt_on) atexit(BSIM4LoadTraceReport); }
+    if (lt_on) lt_t0 = SPfrontEnd->IFseconds();
 #pragma omp parallel for if (model->BSIM4InstCount >= ckt->CKTompMinInst)
     for (idx = 0; idx < model->BSIM4InstCount; idx++) {
         BSIM4instance *here = InstArray[idx];
@@ -85,8 +99,10 @@ CKTcircuit *ckt)
         if (local_error)
             error = local_error;
     }
+    if (lt_on) lt_t1 = SPfrontEnd->IFseconds();
 
     BSIM4LoadRhsMat(inModel, ckt);
+    if (lt_on) { lt_eval_g += lt_t1 - lt_t0; lt_stamp_g += SPfrontEnd->IFseconds() - lt_t1; lt_calls_g++; lt_inst_g = model->BSIM4InstCount; }
 
     return error;
 }

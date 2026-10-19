@@ -57,6 +57,18 @@ void BSIM4v5LoadRhsMat(GENmodel *inModel, CKTcircuit *ckt);
 
 int BSIM4v5polyDepletion(double phi, double ngate,double coxe, double Vgs, double *Vgs_eff, double *dVgs_eff_dVg);
 
+#ifdef USE_OMP
+#include <omp.h>
+static double lt_eval_g, lt_stamp_g; static long lt_calls_g; static int lt_inst_g;
+static double lt_busy_g[16]; static int lt_nth_g, lt_max_g, lt_min_g;
+static void BSIM4v5LoadTraceReport(void) {
+    fprintf(stderr, "LOADTRACE bsim4v5: team=%d max_threads=%d omp_min_inst=%d calls=%ld inst=%d eval=%.3fs (%.1fus/call) stamp=%.3fs (%.1fus/call)\n",
+            lt_nth_g, lt_max_g, lt_min_g, lt_calls_g, lt_inst_g, lt_eval_g, 1e6*lt_eval_g/(lt_calls_g?lt_calls_g:1), lt_stamp_g, 1e6*lt_stamp_g/(lt_calls_g?lt_calls_g:1));
+    for (int th = 0; th < 16; th++) if (lt_busy_g[th] > 0)
+        fprintf(stderr, "LOADTRACE   thread %d busy %.1f us/call\n", th, 1e6*lt_busy_g[th]/(lt_calls_g?lt_calls_g:1));
+}
+#endif
+
 int
 BSIM4v5load(
 GENmodel *inModel,
@@ -69,15 +81,28 @@ CKTcircuit *ckt)
     BSIM4v5instance **InstArray;
     InstArray = model->BSIM4v5InstanceArray;
 
-#pragma omp parallel for if (model->BSIM4v5InstCount >= ckt->CKTompMinInst)
-    for (idx = 0; idx < model->BSIM4v5InstCount; idx++) {
-        BSIM4v5instance *here = InstArray[idx];
-        int local_error = BSIM4v5LoadOMP(here, ckt);
-        if (local_error)
-            error = local_error;
+    /* fork-lite diagnostic: NGSPICE_LOADTRACE=1 prints, at exit, the time spent
+     * in the parallel evaluation loop and in the serial stamping. */
+    static int lt_init = 0, lt_on = 0;
+    double lt_t0 = 0, lt_t1 = 0;
+    if (!lt_init) { lt_init = 1; lt_on = getenv("NGSPICE_LOADTRACE") != NULL; if (lt_on) atexit(BSIM4v5LoadTraceReport); }
+    if (lt_on) { lt_t0 = SPfrontEnd->IFseconds(); lt_max_g = omp_get_max_threads(); lt_min_g = ckt->CKTompMinInst; }
+#pragma omp parallel if (model->BSIM4v5InstCount >= ckt->CKTompMinInst)
+    {
+        double th_t0 = lt_on ? omp_get_wtime() : 0;
+#pragma omp for
+        for (idx = 0; idx < model->BSIM4v5InstCount; idx++) {
+            BSIM4v5instance *here = InstArray[idx];
+            int local_error = BSIM4v5LoadOMP(here, ckt);
+            if (local_error)
+                error = local_error;
+        }
+        if (lt_on) { int th = omp_get_thread_num(); if (th < 16) lt_busy_g[th] += omp_get_wtime() - th_t0; if (th == 0) lt_nth_g = omp_get_num_threads(); }
     }
 
+    if (lt_on) lt_t1 = SPfrontEnd->IFseconds();
     BSIM4v5LoadRhsMat(inModel, ckt);
+    if (lt_on) { lt_eval_g += lt_t1 - lt_t0; lt_stamp_g += SPfrontEnd->IFseconds() - lt_t1; lt_calls_g++; lt_inst_g = model->BSIM4v5InstCount; }
 
     return error;
 }
