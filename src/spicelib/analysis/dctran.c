@@ -15,6 +15,7 @@ Modified: 2023 XSPICE breakpoint fix for shared ngspice by Vyacheslav Shevchuk
    985    chkStep */
 
 #include "ngspice/ngspice.h"
+#include <math.h>
 #include "ngspice/cktdefs.h"
 #include "cktaccept.h"
 #include "ngspice/trandefs.h"
@@ -740,6 +741,30 @@ resume:
             redostep = 1;
 #endif
             ckt->CKTdelta = ckt->CKTdelta/8;
+#ifdef PREDICTOR
+            /* fork-lite (st_restore_nan): a Newton iteration that diverged
+               into NaN/Inf leaves those values in CKTrhsOld/CKTrhs, which
+               the device loads read as the node voltages of the next
+               attempt. Nothing restores them, so every retry with a
+               smaller step starts poisoned and the run dies with
+               "timestep too small" although the last accepted point was
+               fine. Start the retry from the last accepted solution
+               (CKTsols[0], kept by CKTaccept) when that happened. */
+            {
+                int sz = SMPmatSize(ckt->CKTmatrix), k, bad = 0;
+                for (k = 0; k <= sz; k++)
+                    if (!isfinite(ckt->CKTrhsOld[k]) || !isfinite(ckt->CKTrhs[k])) {
+                        bad = 1;
+                        break;
+                    }
+                if (bad && ckt->CKTsols[0]) {
+                    memcpy(ckt->CKTrhsOld, ckt->CKTsols[0], (size_t) (sz + 1) * sizeof(double));
+                    memcpy(ckt->CKTrhs, ckt->CKTsols[0], (size_t) (sz + 1) * sizeof(double));
+                    if (st_on)
+                        fprintf(stderr, "ST RESTORE t=%.6e non-finite iterate, restarting from last accepted solution\n", ckt->CKTtime);
+                }
+            }
+#endif
 #ifdef STEPDEBUG
             (void)printf("delta cut to %g for non-convergence\n",ckt->CKTdelta);
             fflush(stdout);
