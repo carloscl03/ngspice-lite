@@ -31,6 +31,7 @@
 #include <pthread.h>
 #include <stdatomic.h>
 #include <sched.h>
+#include <unistd.h>
 #include <stdint.h>
 #ifdef __x86_64__
 #include <immintrin.h>
@@ -111,9 +112,19 @@ static void do_work(void)
 
 static void pin_self(int tid)
 {
+    /* CPUs 2k and 2k+1 are the two hardware threads of core k on this
+       machine: spread the first half of the pool over the cores, the
+       second half over their siblings */
     cpu_set_t cs;
+    int ncpu = (int) sysconf(_SC_NPROCESSORS_ONLN), ncore = ncpu > 1 ? ncpu / 2 : 1, cpu;
+    if (tid < ncore)
+        cpu = 2 * tid;
+    else
+        cpu = 2 * (tid - ncore) + 1;
+    if (cpu >= ncpu)
+        cpu = tid % ncpu;
     CPU_ZERO(&cs);
-    CPU_SET(2 * tid, &cs);
+    CPU_SET(cpu, &cs);
     pthread_setaffinity_np(pthread_self(), sizeof cs, &cs);
 }
 
