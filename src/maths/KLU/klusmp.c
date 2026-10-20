@@ -572,12 +572,30 @@ SMPcLUfac (SMPmatrix *Matrix, double PivTol)
  */
 /*ARGSUSED*/
 
+/* fork-lite diagnostic: NGSPICE_OPTRACE=1 prints one line per KLU
+   refactorisation / factorisation with its wall time, the gmin loaded on
+   the diagonal and the size of the LU factors */
+#include <time.h>
+int klu_trace_on = -1;
+static double klu_wall(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return ts.tv_sec + 1e-9 * ts.tv_nsec; }
+static void klu_trace_line(const char *what, double dt, double gmin, SMPmatrix *Matrix)
+{
+    klu_numeric *num = Matrix->SMPkluMatrix->KLUmatrixNumeric;
+    klu_symbolic *sym = Matrix->SMPkluMatrix->KLUmatrixSymbolic;
+    fprintf(stderr, "ST KLUFAC %s dt=%.1fms gmin=%.2e n=%u nz=%u lnz=%ld unz=%ld est=%.0f\n", what, 1e3 * dt, gmin,
+            Matrix->SMPkluMatrix->KLUmatrixN, Matrix->SMPkluMatrix->KLUmatrixNZ,
+            num ? (long) num->lnz : -1L, num ? (long) num->unz : -1L, sym ? sym->lnz + sym->unz : -1.0);
+}
+
 int
 SMPluFac (SMPmatrix *Matrix, double PivTol, double Gmin)
 {
     int ret ;
+    double kt0 = 0;
 
     NG_IGNORE (PivTol) ;
+    if (klu_trace_on < 0) klu_trace_on = getenv("NGSPICE_OPTRACE") != NULL;
+    if (klu_trace_on) kt0 = klu_wall();
 
     if (Matrix->CKTkluMODE)
     {
@@ -618,6 +636,7 @@ SMPluFac (SMPmatrix *Matrix, double PivTol, double Gmin)
             }
             return 1;
         } else {
+            if (klu_trace_on) klu_trace_line("refactor", klu_wall() - kt0, Gmin, Matrix);
             return 0 ;
         }
     } else {
@@ -758,6 +777,9 @@ SMPcReorder (SMPmatrix *Matrix, double PivTol, double PivRel, int *NumSwaps)
 int
 SMPreorder (SMPmatrix *Matrix, double PivTol, double PivRel, double Gmin)
 {
+    double rt0;
+    if (klu_trace_on < 0) klu_trace_on = getenv("NGSPICE_OPTRACE") != NULL;
+    rt0 = klu_trace_on ? klu_wall() : 0;
     if (Matrix->CKTkluMODE)
     {
         if (CircuitIsDigital() && Matrix->SMPkluMatrix->KLUmatrixN == 0) {
@@ -777,6 +799,34 @@ SMPreorder (SMPmatrix *Matrix, double PivTol, double PivRel, double Gmin)
         Matrix->SMPkluMatrix->KLUmatrixNumeric = klu_factor (Matrix->SMPkluMatrix->KLUmatrixAp, Matrix->SMPkluMatrix->KLUmatrixAi,
                                                              Matrix->SMPkluMatrix->KLUmatrixAx, Matrix->SMPkluMatrix->KLUmatrixSymbolic,
                                                              Matrix->SMPkluMatrix->KLUmatrixCommon) ;
+        if (klu_trace_on) klu_trace_line("factor", klu_wall() - rt0, Gmin, Matrix);
+        /* fork-lite: a factorisation whose fill-in is far above the estimate
+           of the symbolic analysis means that partial pivoting had to leave
+           the diagonal, typically because floating nodes carry zeros there
+           during the first, gmin-less operating-point attempt. klu_refactor
+           keeps those pivots, so every later iteration pays the same price
+           (an SPI receiver: LU of 25.7 M entries instead of 0.58 M, 1.75 s
+           per refactorisation instead of 15 ms, 173 s wasted). Report the
+           matrix as singular instead: the Newton loop then moves on to gmin
+           stepping, which loads the diagonal and factors cleanly.
+           `set klufillmax=R` sets the ratio (default 4; 0 disables). */
+        if (Matrix->SMPkluMatrix->KLUmatrixNumeric != NULL && Matrix->SMPkluMatrix->KLUmatrixSymbolic != NULL) {
+            static double fillmax = -1;
+            if (fillmax < 0 && !cp_getvar("klufillmax", CP_REAL, &fillmax, 0))
+                fillmax = 4;
+            if (fillmax > 0) {
+                klu_numeric *num = Matrix->SMPkluMatrix->KLUmatrixNumeric;
+                klu_symbolic *sym = Matrix->SMPkluMatrix->KLUmatrixSymbolic;
+                double actual = (double) num->lnz + (double) num->unz, est = sym->lnz + sym->unz;
+                if (est > 0 && actual > fillmax * est) {
+                    if (ft_ngdebug || getenv("NGSPICE_STEPTRACE") || klu_trace_on)
+                        fprintf(stderr, "Note: KLU factorisation fill-in %.0f is %.1fx the estimate %.0f (gmin=%.1e): treating as singular\n",
+                                actual, actual / est, est, Gmin);
+                    klu_free_numeric(&(Matrix->SMPkluMatrix->KLUmatrixNumeric), Matrix->SMPkluMatrix->KLUmatrixCommon);
+                    return E_SINGULAR;
+                }
+            }
+        }
 
         if (Matrix->SMPkluMatrix->KLUmatrixNumeric == NULL)
         {

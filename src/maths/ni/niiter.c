@@ -66,6 +66,12 @@ NIiter(CKTcircuit *ckt, int maxIter)
 
     /* OldCKTstate0 = TMALLOC(double, ckt->CKTnumStates + 1); */
 
+    {
+        static int ot = -1;
+        if (ot < 0) ot = getenv("NGSPICE_OPTRACE") != NULL;
+        if (ot) fprintf(stderr, "ST NIITER begin mode=0x%lx gmin=%.2e srcfact=%.3f time=%.4e maxiter=%d\n",
+                        (unsigned long) ckt->CKTmode, ckt->CKTdiagGmin, ckt->CKTsrcFact, ckt->CKTtime, maxIter);
+    }
     for (;;) {
 
         ckt->CKTnoncon = 0;
