@@ -90,6 +90,7 @@ extern void tprint(struct card* deck);
 
 struct subs;
 static struct card *doit(struct card *deck, wordlist *modnames);
+static struct card *inp_deckcopy_bins(struct card *deck, float csl, float csw);
 static int translate(struct card *deck, char *formal, int flen, char *actual,
 		char *scname, const char *subname, struct subs *subs,
 		wordlist const *modnames);
@@ -616,106 +617,21 @@ doit(struct card *deck, wordlist *modnames) {
                  */
                 if (sss) {
 //                    tprint(sss->su_def);
-                    struct card *su_deck = inp_deckcopy(sss->su_def);
-                    /* If we have modern PDKs, we have to reduce the amount of memory required.
-                       We try to reduce the models to the one really used.
-                       Otherwise su_deck is full of unused binning models.*/
+                    struct card *su_deck;
+                    /* fork-lite: with modern PDKs the wrapper subcircuit of a
+                       transistor carries all its binned models (sky130: 180-216
+                       cards of ~3 kB). The bins that cannot apply to this
+                       instance are now skipped while copying instead of being
+                       copied and deleted afterwards: 21k instances x 180 cards
+                       was 11 GB of string copies. */
                     if ((newcompat.hs || newcompat.spe) && c->w > 0 && c->l > 0) {
-                        /* extract wmin, wmax, lmin, lmax */
-                        struct card* new_deck = su_deck;
-                        struct card* prev = NULL;
-                        while (su_deck) {
-                            if (!ciprefix(".model", su_deck->line)) {
-                                prev = su_deck;
-                                su_deck = su_deck->nextcard;
-                                    continue;
-                            }
-
-                            char* curr_line = su_deck->line;
-                            float fwmin, fwmax, flmin, flmax;
-                            char *wmin = strstr(curr_line, " wmin=");
-                            if (wmin) {
-                                int err;
-                                wmin = wmin + 6;
-                                fwmin = (float)INPevaluate(&wmin, &err, 0);
-                                if (err) {
-                                    prev = su_deck;
-                                    su_deck = su_deck->nextcard;
-                                    continue;
-                                }
-                            }
-                            else {
-                                prev = su_deck;
-                                su_deck = su_deck->nextcard;
-                                continue;
-                            }
-                            char *wmax = strstr(curr_line, " wmax=");
-                            if (wmax) {
-                                int err;
-                                wmax = wmax + 6;
-                                fwmax = (float)INPevaluate(&wmax, &err, 0);
-                                if (err) {
-                                    prev = su_deck;
-                                    su_deck = su_deck->nextcard;
-                                    continue;
-                                }
-                            }
-                            else {
-                                prev = su_deck;
-                                su_deck = su_deck->nextcard;
-                                continue;
-                            }
-
-                            char* lmin = strstr(curr_line, " lmin=");
-                            if (lmin) {
-                                int err;
-                                lmin = lmin + 6;
-                                flmin = (float)INPevaluate(&lmin, &err, 0);
-                                if (err) {
-                                    prev = su_deck;
-                                    su_deck = su_deck->nextcard;
-                                    continue;
-                                }
-                            }
-                            else {
-                                prev = su_deck;
-                                su_deck = su_deck->nextcard;
-                                continue;
-                            }
-                            char* lmax = strstr(curr_line, " lmax=");
-                            if (lmax) {
-                                int err;
-                                lmax = lmax + 6;
-                                flmax = (float)INPevaluate(&lmax, &err, 0);
-                                if (err) {
-                                    prev = su_deck;
-                                    su_deck = su_deck->nextcard;
-                                    continue;
-                                }
-                            }
-                            else {
-                                prev = su_deck;
-                                su_deck = su_deck->nextcard;
-                                continue;
-                            }
-
-                            float csl = (float)scale * c->l;
-                            /* scale by nf */
-                            float csw = (float)scale * c->w / c->nf;
-                            /*fprintf(stdout, "Debug: nf = %f\n", c->nf);*/
-                            if (csl >= flmin && csl < flmax && csw >= fwmin && csw < fwmax) {
-                                /* use the current .model card */
-                                prev = su_deck;
-                                su_deck = su_deck->nextcard;
-                                continue;
-                            }
-                            else {
-                                struct card* tmpcard = su_deck->nextcard;
-                                line_free_x(prev->nextcard, FALSE);
-                                su_deck = prev->nextcard = tmpcard;
-                            }
-                        }
-                        su_deck = new_deck;
+                        float csl = (float)scale * c->l;
+                        /* scale by nf */
+                        float csw = (float)scale * c->w / c->nf;
+                        su_deck = inp_deckcopy_bins(sss->su_def, csl, csw);
+                    }
+                    else {
+                        su_deck = inp_deckcopy(sss->su_def);
                     }
 
                     if (!su_deck) {
@@ -803,6 +719,62 @@ doit(struct card *deck, wordlist *modnames) {
     return (deck);
 }
 
+
+/* fork-lite: does this .model card's bin (lmin/lmax/wmin/wmax) admit the
+   instance geometry? Cards without a complete, parsable set of limits are
+   kept, exactly as the former prune-after-copy loop did. */
+static int
+model_card_bin_admits(const char *curr_line, float csl, float csw)
+{
+    static const char *keys[4] = { " wmin=", " wmax=", " lmin=", " lmax=" };
+    float v[4];
+    int i;
+    for (i = 0; i < 4; i++) {
+        char *pos = strstr(curr_line, keys[i]);
+        int err;
+        if (!pos)
+            return 1;
+        pos += 6;
+        v[i] = (float)INPevaluate(&pos, &err, 0);
+        if (err)
+            return 1;
+    }
+    /* v[0]=wmin v[1]=wmax v[2]=lmin v[3]=lmax */
+    return csl >= v[2] && csl < v[3] && csw >= v[0] && csw < v[1];
+}
+
+/* Copy a subcircuit deck, leaving out the .model cards whose bin does not
+   admit the instance geometry (csl, csw already scaled, csw divided by nf). */
+static struct card *
+inp_deckcopy_bins(struct card *deck, float csl, float csw)
+{
+    struct card *d = NULL, *nd = NULL;
+    while (deck) {
+        if (ciprefix(".model", deck->line) && !model_card_bin_admits(deck->line, csl, csw)) {
+            deck = deck->nextcard;
+            continue;
+        }
+        if (nd) {
+            d->nextcard = TMALLOC(struct card, 1);
+            d = d->nextcard;
+        } else {
+            nd = d = TMALLOC(struct card, 1);
+        }
+        d->linenum = deck->linenum;
+        d->linenum_orig = deck->linenum_orig;
+        d->compmod = deck->compmod;
+        d->linesource = deck->linesource;
+        d->w = deck->w;
+        d->l = deck->l;
+        d->nf = deck->nf;
+        d->line = copy(deck->line);
+        if (deck->error)
+            d->error = copy(deck->error);
+        d->actualLine = inp_deckcopy(deck->actualLine);
+        deck = deck->nextcard;
+    }
+    return nd;
+}
 
 /*-------------------------------------------------------------------*/
 /* Copy a deck, including the actual lines.                          */

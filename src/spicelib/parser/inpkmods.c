@@ -13,6 +13,7 @@ Author: 1985 Thomas L. Quarles, 2023 Holger Vogt
 
 extern INPmodel* modtab;
 extern NGHASHPTR modtabhash;
+extern NGHASHPTR modbinhash;
 
 void INPkillMods(void)
 {
@@ -29,6 +30,10 @@ void INPkillMods(void)
     modtab = NULL;
     ft_curckt->ci_modtab = NULL;
     /* free the hash table */
+    if (modbinhash) {
+        nghash_free(modbinhash, NULL, (void (*)(void *)) txfree);
+        modbinhash = NULL;
+    }
     if (modtabhash) {
         nghash_free(modtabhash, NULL, NULL);
         modtabhash = NULL;

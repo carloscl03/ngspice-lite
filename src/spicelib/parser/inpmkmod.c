@@ -15,6 +15,29 @@ INPmodel *modtab = NULL;
 /* Global input model hash table.
    The modelname is the key, the return value is the pointer to the model. */
 NGHASHPTR modtabhash = NULL;
+/* fork-lite: base model name (binning suffix ".N" stripped) -> newest
+   model with that base; the others hang off INPnextBin. INPgetModBin walks
+   this chain instead of the whole model table, which with modern PDKs
+   (one wrapper subcircuit per transistor, each carrying its binned
+   models) made the lookup quadratic in the number of transistors. */
+NGHASHPTR modbinhash = NULL;
+
+static char *inp_model_base_name(const char *name)
+{
+    const char *dot = strrchr(name, '.');
+    const char *p;
+    if (!dot || !dot[1])
+        return copy(name);
+    for (p = dot + 1; *p; p++)
+        if (!isdigit_c(*p))
+            return copy(name);
+    return copy_substring(name, dot);
+}
+
+INPmodel *INPfindModBins(const char *name)
+{
+    return modbinhash ? (INPmodel *) nghash_find(modbinhash, (void *) name) : NULL;
+}
 
 /*--------------------------------------------------------------
  * This fcn takes the model name and looks to see if it is already
@@ -58,6 +81,17 @@ int INPmakeMod(char *token, int type, struct card *line)
    newm->INPmodfast = NULL;
 
    nghash_insert(modtabhash, token, newm);
+   {
+       char *base = inp_model_base_name(token);
+       if (!modbinhash) {
+           modbinhash = nghash_init(NGHASH_MIN_SIZE);
+           nghash_unique(modbinhash, TRUE);
+       }
+       newm->INPnextBin = (INPmodel *) nghash_find(modbinhash, base);
+       if (newm->INPnextBin)
+           nghash_delete(modbinhash, base);
+       nghash_insert(modbinhash, base, newm);   /* the table keeps the key string */
+   }
 
    modtab = newm;
 

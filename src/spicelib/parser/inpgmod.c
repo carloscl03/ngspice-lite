@@ -13,6 +13,8 @@ Modified: 2001 Paolo Nenzi (Cider Integration)
 #include "ngspice/cpstd.h"
 #include "ngspice/fteext.h"
 #include "ngspice/compatmode.h"
+
+extern INPmodel *INPfindModBins(const char *name);
 #include "ngspice/devdefs.h"
 #include "inpxx.h"
 #include <errno.h>
@@ -42,16 +44,49 @@ extern INPmodel *modtab;
 extern NGHASHPTR modtabhash;
 
 
+/* fork-lite: the model parameter table of a device (BSIM4: ~400 entries)
+   is searched once per parameter of every .model card. With a modern PDK
+   that puts the binned models inside the transistor wrapper subcircuit,
+   a 21k-transistor netlist creates 21k models of ~300 parameters each,
+   i.e. 2.5e9 strcmp. Index each device's table in a hash the first time
+   it is used; the first entry wins, as in the linear scan. */
+#include "ngspice/hash.h"
+static NGHASHPTR *modparm_hash;   /* one per device type, built lazily */
+static int modparm_hash_n;
+
 static IFparm *
 find_model_parameter(const char *name, IFdevice *device)
 {
-    IFparm *p = device->modelParms;
-    IFparm *p_end = p + *(device->numModelParms);
-
+    int type;
+    IFparm *p, *p_end;
+    NGHASHPTR h = NULL;
+    /* locate the device index: devices[] holds pointers to the same objects */
+    for (type = 0; type < ft_sim->numDevices; type++)
+        if (ft_sim->devices[type] == device)
+            break;
+    if (type < ft_sim->numDevices) {
+        if (modparm_hash_n < ft_sim->numDevices) {
+            modparm_hash = TREALLOC(NGHASHPTR, modparm_hash, ft_sim->numDevices);
+            for (; modparm_hash_n < ft_sim->numDevices; modparm_hash_n++)
+                modparm_hash[modparm_hash_n] = NULL;
+        }
+        if (!modparm_hash[type]) {
+            h = modparm_hash[type] = nghash_init(*(device->numModelParms) * 2 + 16);
+            nghash_unique(h, TRUE);
+            p = device->modelParms;
+            p_end = p + *(device->numModelParms);
+            for (; p < p_end; p++)
+                if (!nghash_find(h, (void *) p->keyword))
+                    nghash_insert(h, (void *) p->keyword, p);
+        }
+        h = modparm_hash[type];
+        return (IFparm *) nghash_find(h, (void *) name);
+    }
+    p = device->modelParms;
+    p_end = p + *(device->numModelParms);
     for (; p < p_end; p++)
         if (strcmp(name, p->keyword) == 0)
             return p;
-
     return NULL;
 }
 
@@ -73,16 +108,61 @@ find_instance_parameter(const char *name, IFdevice *device)
 /*
  * code moved from INPgetMod
  */
+/* fork-lite: with the binned models living inside the PDK's transistor
+   wrapper subcircuit, every instance gets its own copy of the model card
+   it uses, under its own hierarchical name. After parameter substitution
+   most of those copies are byte-identical, so share one device model
+   between all model cards with the same type and text; the parser
+   (INPgetValue of ~300 parameters per card) then runs once per distinct
+   card instead of once per transistor. NGSPICE_NOMODDEDUP=1 disables it. */
+static NGHASHPTR modtext_hash;
+static int moddedup = -1;
+static long moddedup_hits;
+
+static const char *model_card_text(const char *line)
+{
+    char *l = (char *) line, *parm;
+    INPgetTok(&l, &parm, 1);        /* .model */
+    tfree(parm);
+    INPgetNetTok(&l, &parm, 1);     /* name */
+    tfree(parm);
+    return l;
+}
+
 static int
 create_model(CKTcircuit *ckt, INPmodel *modtmp, INPtables *tab)
 {
     char    *err = NULL, *line, *parm, *endptr;
     int     error;
+    char    *dedup_key = NULL;
+
+    if (moddedup < 0)
+        moddedup = getenv("NGSPICE_NOMODDEDUP") == NULL;
+    if (moddedup && modtmp->INPmodLine && modtmp->INPmodLine->line) {
+        INPmodel *twin;
+        dedup_key = tprintf("%d %s", modtmp->INPmodType, model_card_text(modtmp->INPmodLine->line));
+        if (!modtext_hash) {
+            modtext_hash = nghash_init(NGHASH_MIN_SIZE);
+            nghash_unique(modtext_hash, TRUE);
+        }
+        twin = (INPmodel *) nghash_find(modtext_hash, dedup_key);
+        if (twin && twin->INPmodfast) {
+            modtmp->INPmodfast = twin->INPmodfast;
+            moddedup_hits++;
+            tfree(dedup_key);
+            return 0;
+        }
+    }
 
     /* not already defined, so create & give parameters */
     error = ft_sim->newModel(ckt, modtmp->INPmodType, &(modtmp->INPmodfast), modtmp->INPmodName);
-    if (error)
+    if (error) {
+        tfree(dedup_key);
         return error;
+    }
+    if (dedup_key) {
+        nghash_insert(modtext_hash, dedup_key, modtmp);   /* the table keeps the key */
+    }
 
 #ifdef CIDER
     /* Handle Numerical Models Differently */
@@ -301,7 +381,8 @@ INPgetModBin(CKTcircuit *ckt, char *name, INPmodel **model, INPtables *tab, char
     l = parse_values[0] * scale;
     w = parse_values[1] / parse_values[2] * scale;
 
-    for (modtmp = modtab; modtmp; modtmp = modtmp->INPnextModel) {
+    /* fork-lite: only the models whose base name is `name` (see INPmakeMod) */
+    for (modtmp = INPfindModBins(name); modtmp; modtmp = modtmp->INPnextBin) {
 
         if (model_name_match(name, modtmp->INPmodName) < 2)
             continue;

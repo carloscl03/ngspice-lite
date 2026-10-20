@@ -94,6 +94,7 @@ struct INPmodel {
     IFuid INPmodName; /* uid of model */
     int INPmodType; /* type index of device type */
     INPmodel *INPnextModel; /* link to next model */
+    INPmodel *INPnextBin; /* fork-lite: next model with the same base name (binning) */
     struct card *INPmodLine; /* pointer to line describing model */
     GENmodel *INPmodfast; /* high speed pointer to model for access */
 };
