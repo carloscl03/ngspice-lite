@@ -217,6 +217,15 @@ int ngpool_threads(void)
 }
 
 
+int ngpool_run_chunk(int n, ngpool_item_fn fn, void *arg, int chunk)
+{
+    int saved = pool.chunk, r;
+    pool.chunk = chunk > 0 ? chunk : 1;
+    r = ngpool_run(n, fn, arg);
+    pool.chunk = saved;
+    return r;
+}
+
 int ngpool_run(int n, ngpool_item_fn fn, void *arg)
 {
     pool.fn = fn;
@@ -237,6 +246,8 @@ int ngpool_run(int n, ngpool_item_fn fn, void *arg)
 void ngpool_stop(void) { }
 int ngpool_configure(int nthreads) { NG_IGNORE(nthreads); return 0; }
 int ngpool_threads(void) { return 0; }
+int ngpool_run_chunk(int n, ngpool_item_fn fn, void *arg, int chunk) { NG_IGNORE(chunk); return ngpool_run(n, fn, arg); }
+
 int ngpool_run(int n, ngpool_item_fn fn, void *arg)
 {
     int i, err = 0;

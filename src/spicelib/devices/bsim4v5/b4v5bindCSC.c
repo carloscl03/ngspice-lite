@@ -107,6 +107,7 @@ BSIM4v5bindCSC (GENmodel *inModel, CKTcircuit *ckt)
         }
     }
 
+    BSIM4v5StampTablesInvalidate() ;
     return (OK) ;
 }
 
@@ -206,6 +207,7 @@ BSIM4v5bindCSCComplex (GENmodel *inModel, CKTcircuit *ckt)
         }
     }
 
+    BSIM4v5StampTablesInvalidate() ;
     return (OK) ;
 }
 
@@ -305,5 +307,6 @@ BSIM4v5bindCSCComplexToReal (GENmodel *inModel, CKTcircuit *ckt)
         }
     }
 
+    BSIM4v5StampTablesInvalidate() ;
     return (OK) ;
 }

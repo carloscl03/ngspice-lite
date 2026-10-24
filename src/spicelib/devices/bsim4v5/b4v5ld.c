@@ -54,6 +54,7 @@
 #ifdef USE_OMP
 int BSIM4v5LoadOMP(BSIM4v5instance *here, CKTcircuit *ckt);
 void BSIM4v5LoadRhsMat(GENmodel *inModel, CKTcircuit *ckt);
+void BSIM4v5StampTablesInvalidate(void);
 #endif
 
 int BSIM4v5polyDepletion(double phi, double ngate,double coxe, double Vgs, double *Vgs_eff, double *dVgs_eff_dVg);
@@ -62,6 +63,10 @@ int BSIM4v5polyDepletion(double phi, double ngate,double coxe, double Vgs, doubl
 #include <omp.h>
 static double lt_eval_g, lt_stamp_g; static long lt_calls_g; static int lt_inst_g;
 static double lt_busy_g[16]; static int lt_nth_g, lt_max_g, lt_min_g;
+/* fused eval+stamp instrumentation (per thread, seconds) */
+static double fz_eval[64], fz_stamp[64], fz_reduce, fz_wait[64]; static long fz_calls; static int fz_T, fz_chunk, fz_nshared;
+static double *fz_reg, *fz_red; static long fz_nreg;
+static int BSIM4v5FusedLoad(BSIM4v5model *model, CKTcircuit *ckt, BSIM4v5instance **InstArray, int n);
 #define LT_MAX 400000
 static double *lt_ev, *lt_gap, lt_prev_end = -1; static long lt_nev;
 static int lt_cmp(const void *a, const void *b) { double x = *(const double *)a, y = *(const double *)b; return (x > y) - (x < y); }
@@ -76,6 +81,20 @@ static void BSIM4v5LoadTraceReport(void) {
             lt_nth_g, lt_max_g, lt_min_g, lt_calls_g, lt_inst_g, lt_eval_g, 1e6*lt_eval_g/(lt_calls_g?lt_calls_g:1), lt_stamp_g, 1e6*lt_stamp_g/(lt_calls_g?lt_calls_g:1));
     for (int th = 0; th < 16; th++) if (lt_busy_g[th] > 0)
         fprintf(stderr, "LOADTRACE   thread %d busy %.1f us/call\n", th, 1e6*lt_busy_g[th]/(lt_calls_g?lt_calls_g:1));
+    if (fz_calls > 0) {
+        int th; double emax = 0, emin = 1e300;
+        fprintf(stderr, "LOADTRACE fused: calls=%ld threads=%d chunk=%d shared=%d reduce=%.1f us/call\n",
+                fz_calls, fz_T, fz_chunk, fz_nshared, 1e6 * fz_reduce / fz_calls);
+        for (th = 0; th < fz_T && th < 64; th++) {
+            double e = fz_eval[th] + fz_stamp[th];
+            if (e > emax) emax = e; if (e < emin) emin = e;
+            fprintf(stderr, "LOADTRACE   fused thread %d: eval %.1f us/call, stamp %.1f us/call, wait %.1f us/call\n", th,
+                    1e6 * fz_eval[th] / fz_calls, 1e6 * fz_stamp[th] / fz_calls, 1e6 * fz_wait[th] / fz_calls);
+        }
+        fprintf(stderr, "LOADTRACE   fused balance: slowest/fastest thread = %.2f\n", emin > 0 ? emax / emin : 0.0);
+        lt_pct("fused region", fz_reg, fz_nreg);
+        lt_pct("fused reduce", fz_red, fz_nreg);
+    }
     lt_pct("region", lt_ev, lt_nev);
     lt_pct("gap", lt_gap, lt_nev > 0 ? lt_nev - 1 : 0);
 }
@@ -109,11 +128,21 @@ CKTcircuit *ckt)
     if (lt_on) { lt_t0 = SPfrontEnd->IFseconds(); lt_max_g = omp_get_max_threads(); lt_min_g = ckt->CKTompMinInst;
         if (!lt_ev) { lt_ev = malloc(LT_MAX * sizeof(double)); lt_gap = malloc(LT_MAX * sizeof(double)); }
         if (lt_prev_end >= 0 && lt_nev > 0 && lt_nev < LT_MAX) lt_gap[lt_nev - 1] = lt_t0 - lt_prev_end; }
+    /* fork-lite: fused evaluation + stamping per thread range, in cache-sized
+       chunks (NGSPICE_FUSE=0 disables, NGSPICE_FUSE_CHUNK sets the chunk) */
+    static int fuse = -1;
+    int fused_done = 0;
+    if (fuse < 0) { const char *e = getenv("NGSPICE_FUSE"); fuse = e ? atoi(e) : 1; }
+    if (fuse && ngpool_threads() > 1 && model->BSIM4v5InstCount >= ckt->CKTompMinInst) {
+        error = BSIM4v5FusedLoad(model, ckt, InstArray, model->BSIM4v5InstCount);
+        fused_done = 1;
+        if (lt_on) lt_nth_g = ngpool_threads();
+    } else
     /* fork-lite: persistent pool instead of a fork/join region per call */
     if (ngpool_threads() > 1 && model->BSIM4v5InstCount >= ckt->CKTompMinInst) {
         struct ngpool_devjob job = { (void **) InstArray, ckt };
         error = ngpool_run(model->BSIM4v5InstCount, BSIM4v5PoolItem, &job);
-            if (lt_on) lt_nth_g = ngpool_threads();
+        if (lt_on) lt_nth_g = ngpool_threads();
     } else {
 #pragma omp parallel if (model->BSIM4v5InstCount >= ckt->CKTompMinInst)
     {
@@ -130,7 +159,8 @@ CKTcircuit *ckt)
 
     }
     if (lt_on) { lt_t1 = SPfrontEnd->IFseconds(); if (lt_nev < LT_MAX) lt_ev[lt_nev++] = lt_t1 - lt_t0; }
-    BSIM4v5LoadRhsMat(inModel, ckt);
+    if (!fused_done)
+        BSIM4v5LoadRhsMat(inModel, ckt);
     if (lt_on) { lt_prev_end = SPfrontEnd->IFseconds(); lt_eval_g += lt_t1 - lt_t0; lt_stamp_g += lt_prev_end - lt_t1; lt_calls_g++; lt_inst_g = model->BSIM4v5InstCount; }
 
     return error;
@@ -5052,190 +5082,502 @@ return(OK);
 
 
 #ifdef USE_OMP
-void BSIM4v5LoadRhsMat(GENmodel *inModel, CKTcircuit *ckt)
+/* fork-lite: stamp the instances [lo, hi) through their *PtrRed pointers
+   into the matrix and into rhs (the circuit RHS, or a private copy) */
+static void
+BSIM4v5StampRange(BSIM4v5instance **InstArray, int lo, int hi, double *rhs)
 {
-    int InstCount, idx;
-    BSIM4v5instance **InstArray;
+    int idx;
     BSIM4v5instance *here;
-    BSIM4v5model *model = (BSIM4v5model*)inModel;
+    BSIM4v5model *model;
 
-    InstArray = model->BSIM4v5InstanceArray;
-    InstCount = model->BSIM4v5InstCount;
-
-    for(idx = 0; idx < InstCount; idx++) {
+    for(idx = lo; idx < hi; idx++) {
        here = InstArray[idx];
        model = BSIM4v5modPtr(here);
         /* Update b for Ax = b */
-           (*(ckt->CKTrhs + here->BSIM4v5dNodePrime) += here->BSIM4v5rhsdPrime);
-           (*(ckt->CKTrhs + here->BSIM4v5gNodePrime) -= here->BSIM4v5rhsgPrime);
+           (*(rhs + here->BSIM4v5dNodePrime) += here->BSIM4v5rhsdPrime);
+           (*(rhs + here->BSIM4v5gNodePrime) -= here->BSIM4v5rhsgPrime);
 
            if (here->BSIM4v5rgateMod == 2)
-               (*(ckt->CKTrhs + here->BSIM4v5gNodeExt) -= here->BSIM4v5rhsgExt);
+               (*(rhs + here->BSIM4v5gNodeExt) -= here->BSIM4v5rhsgExt);
            else if (here->BSIM4v5rgateMod == 3)
-               (*(ckt->CKTrhs + here->BSIM4v5gNodeMid) -= here->BSIM4v5grhsMid);
+               (*(rhs + here->BSIM4v5gNodeMid) -= here->BSIM4v5grhsMid);
 
            if (!here->BSIM4v5rbodyMod)
-           {   (*(ckt->CKTrhs + here->BSIM4v5bNodePrime) += here->BSIM4v5rhsbPrime);
-               (*(ckt->CKTrhs + here->BSIM4v5sNodePrime) += here->BSIM4v5rhssPrime);
+           {   (*(rhs + here->BSIM4v5bNodePrime) += here->BSIM4v5rhsbPrime);
+               (*(rhs + here->BSIM4v5sNodePrime) += here->BSIM4v5rhssPrime);
            }
            else
-           {   (*(ckt->CKTrhs + here->BSIM4v5dbNode) -= here->BSIM4v5rhsdb);
-               (*(ckt->CKTrhs + here->BSIM4v5bNodePrime) += here->BSIM4v5rhsbPrime);
-               (*(ckt->CKTrhs + here->BSIM4v5sbNode) -= here->BSIM4v5rhssb);
-               (*(ckt->CKTrhs + here->BSIM4v5sNodePrime) += here->BSIM4v5rhssPrime);
+           {   (*(rhs + here->BSIM4v5dbNode) -= here->BSIM4v5rhsdb);
+               (*(rhs + here->BSIM4v5bNodePrime) += here->BSIM4v5rhsbPrime);
+               (*(rhs + here->BSIM4v5sbNode) -= here->BSIM4v5rhssb);
+               (*(rhs + here->BSIM4v5sNodePrime) += here->BSIM4v5rhssPrime);
            }
 
            if (model->BSIM4v5rdsMod)
-           {   (*(ckt->CKTrhs + here->BSIM4v5dNode) -= here->BSIM4v5rhsd);
-               (*(ckt->CKTrhs + here->BSIM4v5sNode) += here->BSIM4v5rhss);
+           {   (*(rhs + here->BSIM4v5dNode) -= here->BSIM4v5rhsd);
+               (*(rhs + here->BSIM4v5sNode) += here->BSIM4v5rhss);
            }
 
            if (here->BSIM4v5trnqsMod)
-               *(ckt->CKTrhs + here->BSIM4v5qNode) += here->BSIM4v5rhsq;
+               *(rhs + here->BSIM4v5qNode) += here->BSIM4v5rhsq;
 
 
         /* Update A for Ax = b */
            if (here->BSIM4v5rgateMod == 1)
-           {   (*(here->BSIM4v5GEgePtr) += here->BSIM4v5_1);
-               (*(here->BSIM4v5GPgePtr) -= here->BSIM4v5_2);
-               (*(here->BSIM4v5GEgpPtr) -= here->BSIM4v5_3);
-               (*(here->BSIM4v5GPgpPtr) += here->BSIM4v5_4);
-               (*(here->BSIM4v5GPdpPtr) += here->BSIM4v5_5);
-               (*(here->BSIM4v5GPspPtr) += here->BSIM4v5_6);
-               (*(here->BSIM4v5GPbpPtr) += here->BSIM4v5_7);
+           {   (*(here->BSIM4v5GEgePtrRed) += here->BSIM4v5_1);
+               (*(here->BSIM4v5GPgePtrRed) -= here->BSIM4v5_2);
+               (*(here->BSIM4v5GEgpPtrRed) -= here->BSIM4v5_3);
+               (*(here->BSIM4v5GPgpPtrRed) += here->BSIM4v5_4);
+               (*(here->BSIM4v5GPdpPtrRed) += here->BSIM4v5_5);
+               (*(here->BSIM4v5GPspPtrRed) += here->BSIM4v5_6);
+               (*(here->BSIM4v5GPbpPtrRed) += here->BSIM4v5_7);
            }
            else if (here->BSIM4v5rgateMod == 2)
-           {   (*(here->BSIM4v5GEgePtr) += here->BSIM4v5_8);
-               (*(here->BSIM4v5GEgpPtr) += here->BSIM4v5_9);
-               (*(here->BSIM4v5GEdpPtr) += here->BSIM4v5_10);
-               (*(here->BSIM4v5GEspPtr) += here->BSIM4v5_11);
-               (*(here->BSIM4v5GEbpPtr) += here->BSIM4v5_12);
+           {   (*(here->BSIM4v5GEgePtrRed) += here->BSIM4v5_8);
+               (*(here->BSIM4v5GEgpPtrRed) += here->BSIM4v5_9);
+               (*(here->BSIM4v5GEdpPtrRed) += here->BSIM4v5_10);
+               (*(here->BSIM4v5GEspPtrRed) += here->BSIM4v5_11);
+               (*(here->BSIM4v5GEbpPtrRed) += here->BSIM4v5_12);
 
-               (*(here->BSIM4v5GPgePtr) -= here->BSIM4v5_13);
-               (*(here->BSIM4v5GPgpPtr) += here->BSIM4v5_14);
-               (*(here->BSIM4v5GPdpPtr) += here->BSIM4v5_15);
-               (*(here->BSIM4v5GPspPtr) += here->BSIM4v5_16);
-               (*(here->BSIM4v5GPbpPtr) += here->BSIM4v5_17);
+               (*(here->BSIM4v5GPgePtrRed) -= here->BSIM4v5_13);
+               (*(here->BSIM4v5GPgpPtrRed) += here->BSIM4v5_14);
+               (*(here->BSIM4v5GPdpPtrRed) += here->BSIM4v5_15);
+               (*(here->BSIM4v5GPspPtrRed) += here->BSIM4v5_16);
+               (*(here->BSIM4v5GPbpPtrRed) += here->BSIM4v5_17);
            }
            else if (here->BSIM4v5rgateMod == 3)
-           {   (*(here->BSIM4v5GEgePtr) += here->BSIM4v5_18);
-               (*(here->BSIM4v5GEgmPtr) -= here->BSIM4v5_19);
-               (*(here->BSIM4v5GMgePtr) -= here->BSIM4v5_20);
-               (*(here->BSIM4v5GMgmPtr) += here->BSIM4v5_21);
+           {   (*(here->BSIM4v5GEgePtrRed) += here->BSIM4v5_18);
+               (*(here->BSIM4v5GEgmPtrRed) -= here->BSIM4v5_19);
+               (*(here->BSIM4v5GMgePtrRed) -= here->BSIM4v5_20);
+               (*(here->BSIM4v5GMgmPtrRed) += here->BSIM4v5_21);
 
-               (*(here->BSIM4v5GMdpPtr) += here->BSIM4v5_22);
-               (*(here->BSIM4v5GMgpPtr) += here->BSIM4v5_23);
-               (*(here->BSIM4v5GMspPtr) += here->BSIM4v5_24);
-               (*(here->BSIM4v5GMbpPtr) += here->BSIM4v5_25);
+               (*(here->BSIM4v5GMdpPtrRed) += here->BSIM4v5_22);
+               (*(here->BSIM4v5GMgpPtrRed) += here->BSIM4v5_23);
+               (*(here->BSIM4v5GMspPtrRed) += here->BSIM4v5_24);
+               (*(here->BSIM4v5GMbpPtrRed) += here->BSIM4v5_25);
 
-               (*(here->BSIM4v5DPgmPtr) += here->BSIM4v5_26);
-               (*(here->BSIM4v5GPgmPtr) -= here->BSIM4v5_27);
-               (*(here->BSIM4v5SPgmPtr) += here->BSIM4v5_28);
-               (*(here->BSIM4v5BPgmPtr) += here->BSIM4v5_29);
+               (*(here->BSIM4v5DPgmPtrRed) += here->BSIM4v5_26);
+               (*(here->BSIM4v5GPgmPtrRed) -= here->BSIM4v5_27);
+               (*(here->BSIM4v5SPgmPtrRed) += here->BSIM4v5_28);
+               (*(here->BSIM4v5BPgmPtrRed) += here->BSIM4v5_29);
 
-               (*(here->BSIM4v5GPgpPtr) += here->BSIM4v5_30);
-               (*(here->BSIM4v5GPdpPtr) += here->BSIM4v5_31);
-               (*(here->BSIM4v5GPspPtr) += here->BSIM4v5_32);
-               (*(here->BSIM4v5GPbpPtr) += here->BSIM4v5_33);
+               (*(here->BSIM4v5GPgpPtrRed) += here->BSIM4v5_30);
+               (*(here->BSIM4v5GPdpPtrRed) += here->BSIM4v5_31);
+               (*(here->BSIM4v5GPspPtrRed) += here->BSIM4v5_32);
+               (*(here->BSIM4v5GPbpPtrRed) += here->BSIM4v5_33);
            }
 
 
             else
-           {   (*(here->BSIM4v5GPgpPtr) += here->BSIM4v5_34);
-               (*(here->BSIM4v5GPdpPtr) += here->BSIM4v5_35);
-               (*(here->BSIM4v5GPspPtr) += here->BSIM4v5_36);
-               (*(here->BSIM4v5GPbpPtr) += here->BSIM4v5_37);
+           {   (*(here->BSIM4v5GPgpPtrRed) += here->BSIM4v5_34);
+               (*(here->BSIM4v5GPdpPtrRed) += here->BSIM4v5_35);
+               (*(here->BSIM4v5GPspPtrRed) += here->BSIM4v5_36);
+               (*(here->BSIM4v5GPbpPtrRed) += here->BSIM4v5_37);
            }
 
 
            if (model->BSIM4v5rdsMod)
-           {   (*(here->BSIM4v5DgpPtr) += here->BSIM4v5_38);
-               (*(here->BSIM4v5DspPtr) += here->BSIM4v5_39);
-               (*(here->BSIM4v5DbpPtr) += here->BSIM4v5_40);
-               (*(here->BSIM4v5SdpPtr) += here->BSIM4v5_41);
-               (*(here->BSIM4v5SgpPtr) += here->BSIM4v5_42);
-               (*(here->BSIM4v5SbpPtr) += here->BSIM4v5_43);
+           {   (*(here->BSIM4v5DgpPtrRed) += here->BSIM4v5_38);
+               (*(here->BSIM4v5DspPtrRed) += here->BSIM4v5_39);
+               (*(here->BSIM4v5DbpPtrRed) += here->BSIM4v5_40);
+               (*(here->BSIM4v5SdpPtrRed) += here->BSIM4v5_41);
+               (*(here->BSIM4v5SgpPtrRed) += here->BSIM4v5_42);
+               (*(here->BSIM4v5SbpPtrRed) += here->BSIM4v5_43);
            }
 
-           (*(here->BSIM4v5DPdpPtr) += here->BSIM4v5_44);
-           (*(here->BSIM4v5DPdPtr) -= here->BSIM4v5_45);
-           (*(here->BSIM4v5DPgpPtr) += here->BSIM4v5_46);
-           (*(here->BSIM4v5DPspPtr) -= here->BSIM4v5_47);
-           (*(here->BSIM4v5DPbpPtr) -= here->BSIM4v5_48);
+           (*(here->BSIM4v5DPdpPtrRed) += here->BSIM4v5_44);
+           (*(here->BSIM4v5DPdPtrRed) -= here->BSIM4v5_45);
+           (*(here->BSIM4v5DPgpPtrRed) += here->BSIM4v5_46);
+           (*(here->BSIM4v5DPspPtrRed) -= here->BSIM4v5_47);
+           (*(here->BSIM4v5DPbpPtrRed) -= here->BSIM4v5_48);
 
-           (*(here->BSIM4v5DdpPtr) -= here->BSIM4v5_49);
-           (*(here->BSIM4v5DdPtr) += here->BSIM4v5_50);
+           (*(here->BSIM4v5DdpPtrRed) -= here->BSIM4v5_49);
+           (*(here->BSIM4v5DdPtrRed) += here->BSIM4v5_50);
 
-           (*(here->BSIM4v5SPdpPtr) -= here->BSIM4v5_51);
-           (*(here->BSIM4v5SPgpPtr) += here->BSIM4v5_52);
-           (*(here->BSIM4v5SPspPtr) += here->BSIM4v5_53);
-           (*(here->BSIM4v5SPsPtr) -= here->BSIM4v5_54);
-           (*(here->BSIM4v5SPbpPtr) -= here->BSIM4v5_55);
+           (*(here->BSIM4v5SPdpPtrRed) -= here->BSIM4v5_51);
+           (*(here->BSIM4v5SPgpPtrRed) += here->BSIM4v5_52);
+           (*(here->BSIM4v5SPspPtrRed) += here->BSIM4v5_53);
+           (*(here->BSIM4v5SPsPtrRed) -= here->BSIM4v5_54);
+           (*(here->BSIM4v5SPbpPtrRed) -= here->BSIM4v5_55);
 
-           (*(here->BSIM4v5SspPtr) -= here->BSIM4v5_56);
-           (*(here->BSIM4v5SsPtr) += here->BSIM4v5_57);
+           (*(here->BSIM4v5SspPtrRed) -= here->BSIM4v5_56);
+           (*(here->BSIM4v5SsPtrRed) += here->BSIM4v5_57);
 
-           (*(here->BSIM4v5BPdpPtr) += here->BSIM4v5_58);
-           (*(here->BSIM4v5BPgpPtr) += here->BSIM4v5_59);
-           (*(here->BSIM4v5BPspPtr) += here->BSIM4v5_60);
-           (*(here->BSIM4v5BPbpPtr) += here->BSIM4v5_61);
+           (*(here->BSIM4v5BPdpPtrRed) += here->BSIM4v5_58);
+           (*(here->BSIM4v5BPgpPtrRed) += here->BSIM4v5_59);
+           (*(here->BSIM4v5BPspPtrRed) += here->BSIM4v5_60);
+           (*(here->BSIM4v5BPbpPtrRed) += here->BSIM4v5_61);
 
            /* stamp gidl */
-           (*(here->BSIM4v5DPdpPtr) += here->BSIM4v5_62);
-           (*(here->BSIM4v5DPgpPtr) += here->BSIM4v5_63);
-           (*(here->BSIM4v5DPspPtr) -= here->BSIM4v5_64);
-           (*(here->BSIM4v5DPbpPtr) += here->BSIM4v5_65);
-           (*(here->BSIM4v5BPdpPtr) -= here->BSIM4v5_66);
-           (*(here->BSIM4v5BPgpPtr) -= here->BSIM4v5_67);
-           (*(here->BSIM4v5BPspPtr) += here->BSIM4v5_68);
-           (*(here->BSIM4v5BPbpPtr) -= here->BSIM4v5_69);
+           (*(here->BSIM4v5DPdpPtrRed) += here->BSIM4v5_62);
+           (*(here->BSIM4v5DPgpPtrRed) += here->BSIM4v5_63);
+           (*(here->BSIM4v5DPspPtrRed) -= here->BSIM4v5_64);
+           (*(here->BSIM4v5DPbpPtrRed) += here->BSIM4v5_65);
+           (*(here->BSIM4v5BPdpPtrRed) -= here->BSIM4v5_66);
+           (*(here->BSIM4v5BPgpPtrRed) -= here->BSIM4v5_67);
+           (*(here->BSIM4v5BPspPtrRed) += here->BSIM4v5_68);
+           (*(here->BSIM4v5BPbpPtrRed) -= here->BSIM4v5_69);
             /* stamp gisl */
-           (*(here->BSIM4v5SPdpPtr) -= here->BSIM4v5_70);
-           (*(here->BSIM4v5SPgpPtr) += here->BSIM4v5_71);
-           (*(here->BSIM4v5SPspPtr) += here->BSIM4v5_72);
-           (*(here->BSIM4v5SPbpPtr) += here->BSIM4v5_73);
-           (*(here->BSIM4v5BPdpPtr) += here->BSIM4v5_74);
-           (*(here->BSIM4v5BPgpPtr) -= here->BSIM4v5_75);
-           (*(here->BSIM4v5BPspPtr) -= here->BSIM4v5_76);
-           (*(here->BSIM4v5BPbpPtr) -= here->BSIM4v5_77);
+           (*(here->BSIM4v5SPdpPtrRed) -= here->BSIM4v5_70);
+           (*(here->BSIM4v5SPgpPtrRed) += here->BSIM4v5_71);
+           (*(here->BSIM4v5SPspPtrRed) += here->BSIM4v5_72);
+           (*(here->BSIM4v5SPbpPtrRed) += here->BSIM4v5_73);
+           (*(here->BSIM4v5BPdpPtrRed) += here->BSIM4v5_74);
+           (*(here->BSIM4v5BPgpPtrRed) -= here->BSIM4v5_75);
+           (*(here->BSIM4v5BPspPtrRed) -= here->BSIM4v5_76);
+           (*(here->BSIM4v5BPbpPtrRed) -= here->BSIM4v5_77);
 
 
            if (here->BSIM4v5rbodyMod)
-           {   (*(here->BSIM4v5DPdbPtr) += here->BSIM4v5_78);
-               (*(here->BSIM4v5SPsbPtr) -= here->BSIM4v5_79);
+           {   (*(here->BSIM4v5DPdbPtrRed) += here->BSIM4v5_78);
+               (*(here->BSIM4v5SPsbPtrRed) -= here->BSIM4v5_79);
 
-               (*(here->BSIM4v5DBdpPtr) += here->BSIM4v5_80);
-               (*(here->BSIM4v5DBdbPtr) += here->BSIM4v5_81);
-               (*(here->BSIM4v5DBbpPtr) -= here->BSIM4v5_82);
-               (*(here->BSIM4v5DBbPtr) -= here->BSIM4v5_83);
+               (*(here->BSIM4v5DBdpPtrRed) += here->BSIM4v5_80);
+               (*(here->BSIM4v5DBdbPtrRed) += here->BSIM4v5_81);
+               (*(here->BSIM4v5DBbpPtrRed) -= here->BSIM4v5_82);
+               (*(here->BSIM4v5DBbPtrRed) -= here->BSIM4v5_83);
 
-               (*(here->BSIM4v5BPdbPtr) -= here->BSIM4v5_84);
-               (*(here->BSIM4v5BPbPtr) -= here->BSIM4v5_85);
-               (*(here->BSIM4v5BPsbPtr) -= here->BSIM4v5_86);
-               (*(here->BSIM4v5BPbpPtr) += here->BSIM4v5_87);
+               (*(here->BSIM4v5BPdbPtrRed) -= here->BSIM4v5_84);
+               (*(here->BSIM4v5BPbPtrRed) -= here->BSIM4v5_85);
+               (*(here->BSIM4v5BPsbPtrRed) -= here->BSIM4v5_86);
+               (*(here->BSIM4v5BPbpPtrRed) += here->BSIM4v5_87);
 
-               (*(here->BSIM4v5SBspPtr) += here->BSIM4v5_88);
-               (*(here->BSIM4v5SBbpPtr) -= here->BSIM4v5_89);
-               (*(here->BSIM4v5SBbPtr) -= here->BSIM4v5_90);
-               (*(here->BSIM4v5SBsbPtr) += here->BSIM4v5_91);
+               (*(here->BSIM4v5SBspPtrRed) += here->BSIM4v5_88);
+               (*(here->BSIM4v5SBbpPtrRed) -= here->BSIM4v5_89);
+               (*(here->BSIM4v5SBbPtrRed) -= here->BSIM4v5_90);
+               (*(here->BSIM4v5SBsbPtrRed) += here->BSIM4v5_91);
 
-               (*(here->BSIM4v5BdbPtr) -= here->BSIM4v5_92);
-               (*(here->BSIM4v5BbpPtr) -= here->BSIM4v5_93);
-               (*(here->BSIM4v5BsbPtr) -= here->BSIM4v5_94);
-               (*(here->BSIM4v5BbPtr) += here->BSIM4v5_95);
+               (*(here->BSIM4v5BdbPtrRed) -= here->BSIM4v5_92);
+               (*(here->BSIM4v5BbpPtrRed) -= here->BSIM4v5_93);
+               (*(here->BSIM4v5BsbPtrRed) -= here->BSIM4v5_94);
+               (*(here->BSIM4v5BbPtrRed) += here->BSIM4v5_95);
            }
 
            if (here->BSIM4v5trnqsMod)
-           {   (*(here->BSIM4v5QqPtr) += here->BSIM4v5_96);
-               (*(here->BSIM4v5QgpPtr) += here->BSIM4v5_97);
-               (*(here->BSIM4v5QdpPtr) += here->BSIM4v5_98);
-               (*(here->BSIM4v5QspPtr) += here->BSIM4v5_99);
-               (*(here->BSIM4v5QbpPtr) += here->BSIM4v5_100);
+           {   (*(here->BSIM4v5QqPtrRed) += here->BSIM4v5_96);
+               (*(here->BSIM4v5QgpPtrRed) += here->BSIM4v5_97);
+               (*(here->BSIM4v5QdpPtrRed) += here->BSIM4v5_98);
+               (*(here->BSIM4v5QspPtrRed) += here->BSIM4v5_99);
+               (*(here->BSIM4v5QbpPtrRed) += here->BSIM4v5_100);
 
-               (*(here->BSIM4v5DPqPtr) += here->BSIM4v5_101);
-               (*(here->BSIM4v5SPqPtr) += here->BSIM4v5_102);
-               (*(here->BSIM4v5GPqPtr) -= here->BSIM4v5_103);
+               (*(here->BSIM4v5DPqPtrRed) += here->BSIM4v5_101);
+               (*(here->BSIM4v5SPqPtrRed) += here->BSIM4v5_102);
+               (*(here->BSIM4v5GPqPtrRed) -= here->BSIM4v5_103);
            }
+    }
+}
+
+/* ------------------------------------------------------------------------
+ * fork-lite: parallel stamping.
+ *
+ * The matrix entries of an instance are reached through its 70 *Ptr
+ * fields. Instances are split in static ranges, one per pool thread. An
+ * entry touched by instances of a single range is stamped in place, in the
+ * same order as before; an entry touched by several ranges (supplies, clock,
+ * ground) is redirected, per thread, to a private slot, and the slots are
+ * added into the matrix afterwards. The RHS gets one private copy per
+ * thread. Tables are rebuilt whenever the pointers may have changed
+ * (setup, KLU binding) or the thread count changes.
+ * ---------------------------------------------------------------------- */
+#include <stddef.h>
+#include <time.h>
+#include <unistd.h>
+#include "ngspice/hash.h"
+
+#define BSIM4v5_NPTR 70
+static const size_t bsim4v5_ptr_off[BSIM4v5_NPTR] = {
+    offsetof(BSIM4v5instance, BSIM4v5BPbPtr),
+    offsetof(BSIM4v5instance, BSIM4v5BPbpPtr),
+    offsetof(BSIM4v5instance, BSIM4v5BPdbPtr),
+    offsetof(BSIM4v5instance, BSIM4v5BPdpPtr),
+    offsetof(BSIM4v5instance, BSIM4v5BPgmPtr),
+    offsetof(BSIM4v5instance, BSIM4v5BPgpPtr),
+    offsetof(BSIM4v5instance, BSIM4v5BPsbPtr),
+    offsetof(BSIM4v5instance, BSIM4v5BPspPtr),
+    offsetof(BSIM4v5instance, BSIM4v5BbPtr),
+    offsetof(BSIM4v5instance, BSIM4v5BbpPtr),
+    offsetof(BSIM4v5instance, BSIM4v5BdbPtr),
+    offsetof(BSIM4v5instance, BSIM4v5BsbPtr),
+    offsetof(BSIM4v5instance, BSIM4v5DBbPtr),
+    offsetof(BSIM4v5instance, BSIM4v5DBbpPtr),
+    offsetof(BSIM4v5instance, BSIM4v5DBdbPtr),
+    offsetof(BSIM4v5instance, BSIM4v5DBdpPtr),
+    offsetof(BSIM4v5instance, BSIM4v5DPbpPtr),
+    offsetof(BSIM4v5instance, BSIM4v5DPdPtr),
+    offsetof(BSIM4v5instance, BSIM4v5DPdbPtr),
+    offsetof(BSIM4v5instance, BSIM4v5DPdpPtr),
+    offsetof(BSIM4v5instance, BSIM4v5DPgmPtr),
+    offsetof(BSIM4v5instance, BSIM4v5DPgpPtr),
+    offsetof(BSIM4v5instance, BSIM4v5DPqPtr),
+    offsetof(BSIM4v5instance, BSIM4v5DPspPtr),
+    offsetof(BSIM4v5instance, BSIM4v5DbpPtr),
+    offsetof(BSIM4v5instance, BSIM4v5DdPtr),
+    offsetof(BSIM4v5instance, BSIM4v5DdpPtr),
+    offsetof(BSIM4v5instance, BSIM4v5DgpPtr),
+    offsetof(BSIM4v5instance, BSIM4v5DspPtr),
+    offsetof(BSIM4v5instance, BSIM4v5GEbpPtr),
+    offsetof(BSIM4v5instance, BSIM4v5GEdpPtr),
+    offsetof(BSIM4v5instance, BSIM4v5GEgePtr),
+    offsetof(BSIM4v5instance, BSIM4v5GEgmPtr),
+    offsetof(BSIM4v5instance, BSIM4v5GEgpPtr),
+    offsetof(BSIM4v5instance, BSIM4v5GEspPtr),
+    offsetof(BSIM4v5instance, BSIM4v5GMbpPtr),
+    offsetof(BSIM4v5instance, BSIM4v5GMdpPtr),
+    offsetof(BSIM4v5instance, BSIM4v5GMgePtr),
+    offsetof(BSIM4v5instance, BSIM4v5GMgmPtr),
+    offsetof(BSIM4v5instance, BSIM4v5GMgpPtr),
+    offsetof(BSIM4v5instance, BSIM4v5GMspPtr),
+    offsetof(BSIM4v5instance, BSIM4v5GPbpPtr),
+    offsetof(BSIM4v5instance, BSIM4v5GPdpPtr),
+    offsetof(BSIM4v5instance, BSIM4v5GPgePtr),
+    offsetof(BSIM4v5instance, BSIM4v5GPgmPtr),
+    offsetof(BSIM4v5instance, BSIM4v5GPgpPtr),
+    offsetof(BSIM4v5instance, BSIM4v5GPqPtr),
+    offsetof(BSIM4v5instance, BSIM4v5GPspPtr),
+    offsetof(BSIM4v5instance, BSIM4v5QbpPtr),
+    offsetof(BSIM4v5instance, BSIM4v5QdpPtr),
+    offsetof(BSIM4v5instance, BSIM4v5QgpPtr),
+    offsetof(BSIM4v5instance, BSIM4v5QqPtr),
+    offsetof(BSIM4v5instance, BSIM4v5QspPtr),
+    offsetof(BSIM4v5instance, BSIM4v5SBbPtr),
+    offsetof(BSIM4v5instance, BSIM4v5SBbpPtr),
+    offsetof(BSIM4v5instance, BSIM4v5SBsbPtr),
+    offsetof(BSIM4v5instance, BSIM4v5SBspPtr),
+    offsetof(BSIM4v5instance, BSIM4v5SPbpPtr),
+    offsetof(BSIM4v5instance, BSIM4v5SPdpPtr),
+    offsetof(BSIM4v5instance, BSIM4v5SPgmPtr),
+    offsetof(BSIM4v5instance, BSIM4v5SPgpPtr),
+    offsetof(BSIM4v5instance, BSIM4v5SPqPtr),
+    offsetof(BSIM4v5instance, BSIM4v5SPsPtr),
+    offsetof(BSIM4v5instance, BSIM4v5SPsbPtr),
+    offsetof(BSIM4v5instance, BSIM4v5SPspPtr),
+    offsetof(BSIM4v5instance, BSIM4v5SbpPtr),
+    offsetof(BSIM4v5instance, BSIM4v5SdpPtr),
+    offsetof(BSIM4v5instance, BSIM4v5SgpPtr),
+    offsetof(BSIM4v5instance, BSIM4v5SsPtr),
+    offsetof(BSIM4v5instance, BSIM4v5SspPtr),
+};
+static const size_t bsim4v5_red_off[BSIM4v5_NPTR] = {
+    offsetof(BSIM4v5instance, BSIM4v5BPbPtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5BPbpPtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5BPdbPtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5BPdpPtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5BPgmPtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5BPgpPtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5BPsbPtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5BPspPtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5BbPtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5BbpPtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5BdbPtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5BsbPtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5DBbPtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5DBbpPtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5DBdbPtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5DBdpPtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5DPbpPtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5DPdPtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5DPdbPtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5DPdpPtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5DPgmPtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5DPgpPtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5DPqPtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5DPspPtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5DbpPtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5DdPtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5DdpPtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5DgpPtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5DspPtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5GEbpPtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5GEdpPtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5GEgePtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5GEgmPtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5GEgpPtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5GEspPtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5GMbpPtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5GMdpPtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5GMgePtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5GMgmPtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5GMgpPtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5GMspPtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5GPbpPtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5GPdpPtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5GPgePtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5GPgmPtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5GPgpPtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5GPqPtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5GPspPtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5QbpPtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5QdpPtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5QgpPtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5QqPtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5QspPtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5SBbPtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5SBbpPtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5SBsbPtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5SBspPtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5SPbpPtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5SPdpPtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5SPgmPtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5SPgpPtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5SPqPtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5SPsPtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5SPsbPtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5SPspPtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5SbpPtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5SdpPtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5SgpPtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5SsPtrRed),
+    offsetof(BSIM4v5instance, BSIM4v5SspPtrRed),
+};
+
+static struct {
+    int valid, nthreads, ninst, rhs_n, nshared;
+    double **targets;     /* shared entries: where to add the slots */
+    double *slots;        /* nthreads x nshared */
+    double *rhs_priv;     /* nthreads x (rhs_n + 1) */
+    int *lo;              /* nthreads + 1 range bounds */
+    double *ax_seen;      /* KLU value array at table build time */
+} st;
+
+void BSIM4v5StampTablesInvalidate(void)
+{
+    st.valid = 0;
+}
+
+static inline double **inst_ptr(BSIM4v5instance *h, int k) { return (double **)((char *)h + bsim4v5_ptr_off[k]); }
+static inline double **inst_red(BSIM4v5instance *h, int k) { return (double **)((char *)h + bsim4v5_red_off[k]); }
+
+static void
+stamp_tables_build(BSIM4v5model *model, CKTcircuit *ckt, int T)
+{
+    BSIM4v5instance **InstArray = model->BSIM4v5InstanceArray;
+    int n = model->BSIM4v5InstCount, i, k, t;
+    NGHASHPTR owner, slot;
+
+    /* serial default: stamp through the original pointers */
+    for (i = 0; i < n; i++)
+        for (k = 0; k < BSIM4v5_NPTR; k++)
+            *inst_red(InstArray[i], k) = *inst_ptr(InstArray[i], k);
+
+    free(st.targets); free(st.slots); free(st.rhs_priv); free(st.lo);
+    st.targets = NULL; st.slots = NULL; st.rhs_priv = NULL; st.lo = NULL;
+    st.nthreads = T; st.ninst = n; st.nshared = 0; st.valid = 1;
+    if (T < 2)
+        return;
+
+    st.lo = TMALLOC(int, T + 1);
+    for (t = 0; t <= T; t++)
+        st.lo[t] = (int)((long) n * t / T);
+
+    /* pass 1: owner thread of every matrix entry, -1 when shared */
+    owner = nghash_init_pointer(4 * n);
+    for (t = 0; t < T; t++)
+        for (i = st.lo[t]; i < st.lo[t + 1]; i++)
+            for (k = 0; k < BSIM4v5_NPTR; k++) {
+                double *p = *inst_ptr(InstArray[i], k);
+                void *v;
+                if (!p) continue;
+                v = nghash_find(owner, p);
+                if (!v) {
+                    nghash_insert(owner, p, (void *)(intptr_t)(t + 1));
+                } else if ((intptr_t) v != t + 1 && (intptr_t) v != -1) {
+                    nghash_delete(owner, p);
+                    nghash_insert(owner, p, (void *)(intptr_t) -1);
+                }
+            }
+    /* pass 2: a slot index per shared entry, redirect the pointers */
+    slot = nghash_init_pointer(4 * n);
+    st.targets = TMALLOC(double *, 1);
+    {
+        int cap = 1;
+        for (t = 0; t < T; t++)
+            for (i = st.lo[t]; i < st.lo[t + 1]; i++)
+                for (k = 0; k < BSIM4v5_NPTR; k++) {
+                    double *p = *inst_ptr(InstArray[i], k);
+                    void *v;
+                    if (!p) continue;
+                    if ((intptr_t) nghash_find(owner, p) != -1)
+                        continue;
+                    v = nghash_find(slot, p);
+                    if (!v) {
+                        if (st.nshared == cap) { cap *= 2; st.targets = TREALLOC(double *, st.targets, cap); }
+                        st.targets[st.nshared] = p;
+                        nghash_insert(slot, p, (void *)(intptr_t)(st.nshared + 1));
+                        v = (void *)(intptr_t)(st.nshared + 1);
+                        st.nshared++;
+                    }
+                    /* the slot address is assigned below, once nshared is known */
+                    *inst_red(InstArray[i], k) = (double *)(intptr_t)(((intptr_t) v - 1) * T + t + 1);  /* temporary code */
+                }
+    }
+    st.slots = TMALLOC(double, (size_t) T * (st.nshared ? st.nshared : 1));
+    for (t = 0; t < T; t++)
+        for (i = st.lo[t]; i < st.lo[t + 1]; i++)
+            for (k = 0; k < BSIM4v5_NPTR; k++) {
+                double *p = *inst_ptr(InstArray[i], k);
+                if (!p) continue;
+                if ((intptr_t) nghash_find(owner, p) != -1)
+                    continue;
+                {
+                    intptr_t code = (intptr_t) *inst_red(InstArray[i], k) - 1;
+                    int ks = (int)(code / T);
+                    *inst_red(InstArray[i], k) = &st.slots[(size_t) t * st.nshared + ks];
+                }
+            }
+    nghash_free(owner, NULL, NULL);
+    nghash_free(slot, NULL, NULL);
+    st.rhs_n = SMPmatSize(ckt->CKTmatrix);
+    st.rhs_priv = TMALLOC(double, (size_t) T * (st.rhs_n + 1));
+    if (getenv("NGSPICE_LOADTRACE"))
+        fprintf(stderr, "LOADTRACE bsim4v5 stamp tables: inst=%d threads=%d shared entries=%d\n", n, T, st.nshared);
+}
+
+struct BSIM4v5StampJob { BSIM4v5instance **inst; };
+
+static int
+BSIM4v5StampItem(int t, void *arg)
+{
+    struct BSIM4v5StampJob *j = (struct BSIM4v5StampJob *) arg;
+    double *rhs = st.rhs_priv + (size_t) t * (st.rhs_n + 1);
+    memset(rhs, 0, sizeof(double) * (size_t)(st.rhs_n + 1));
+    memset(st.slots + (size_t) t * st.nshared, 0, sizeof(double) * (size_t) st.nshared);
+    BSIM4v5StampRange(j->inst, st.lo[t], st.lo[t + 1], rhs);
+    return 0;
+}
+
+void BSIM4v5LoadRhsMat(GENmodel *inModel, CKTcircuit *ckt)
+{
+    BSIM4v5model *model = (BSIM4v5model*)inModel;
+    BSIM4v5instance **InstArray = model->BSIM4v5InstanceArray;
+    int InstCount = model->BSIM4v5InstCount;
+    int T = ngpool_threads();
+    static int nopstamp = -1;
+
+    if (nopstamp < 0)
+        nopstamp = getenv("NGSPICE_NOPSTAMP") != NULL;
+    if (T < 2 || nopstamp || InstCount < ckt->CKTompMinInst)
+        T = 1;
+    if (!st.valid || st.nthreads != T || st.ninst != InstCount)
+        stamp_tables_build(model, ckt, T);
+
+    if (T < 2) {
+        BSIM4v5StampRange(InstArray, 0, InstCount, ckt->CKTrhs);
+        return;
+    }
+    {
+        struct BSIM4v5StampJob job = { InstArray };
+        int t, k, i;
+        ngpool_run_chunk(T, BSIM4v5StampItem, &job, 1);
+        /* reduce the shared entries and the private RHS copies */
+        for (t = 0; t < T; t++) {
+            const double *sl = st.slots + (size_t) t * st.nshared;
+            const double *rhs = st.rhs_priv + (size_t) t * (st.rhs_n + 1);
+            for (k = 0; k < st.nshared; k++)
+                *st.targets[k] += sl[k];
+            for (i = 0; i <= st.rhs_n; i++)
+                ckt->CKTrhs[i] += rhs[i];
+        }
     }
 }
 
@@ -5272,4 +5614,99 @@ int BSIM4v5polyDepletion(
         *dVgs_eff_dVg = 1.0;
     }
     return(0);
+}
+
+/* ------------------------------------------------------------------------
+ * fork-lite: fused evaluation + stamping.
+ *
+ * The two-phase scheme (all threads evaluate, then the matrix is stamped)
+ * touches every instance twice per iteration, and between the two touches
+ * the whole instance array (~2 kB x instances) has streamed through the
+ * caches, so the stamping phase re-reads it from memory. Here each thread
+ * owns a static range of instances (the parallel-stamp tables redirect the
+ * entries that several ranges share to per-thread slots) and walks it in
+ * chunks small enough to stay in its L2: evaluate the chunk, stamp it while
+ * hot, next chunk. The shared slots and the private RHS copies are reduced
+ * afterwards by the caller's thread.
+ * ---------------------------------------------------------------------- */
+static double fz_now(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return ts.tv_sec + 1e-9 * ts.tv_nsec; }
+
+struct BSIM4v5FuseJob { BSIM4v5instance **inst; CKTcircuit *ckt; int chunk; int trace; int err; };
+
+static int
+BSIM4v5FuseItem(int t, void *arg)
+{
+    struct BSIM4v5FuseJob *j = (struct BSIM4v5FuseJob *) arg;
+    double *rhs = st.rhs_priv + (size_t) t * (st.rhs_n + 1);
+    int lo = st.lo[t], hi = st.lo[t + 1], i, c, err = 0;
+    double te = 0, ts = 0, t0, t1;
+
+    memset(rhs, 0, sizeof(double) * (size_t)(st.rhs_n + 1));
+    memset(st.slots + (size_t) t * st.nshared, 0, sizeof(double) * (size_t) st.nshared);
+    for (i = lo; i < hi; i += j->chunk) {
+        int e = i + j->chunk < hi ? i + j->chunk : hi;
+        if (j->trace) t0 = fz_now();
+        for (c = i; c < e; c++) {
+            int le = BSIM4v5LoadOMP(j->inst[c], j->ckt);
+            if (le) err = le;
+        }
+        if (j->trace) { t1 = fz_now(); te += t1 - t0; }
+        BSIM4v5StampRange(j->inst, i, e, rhs);
+        if (j->trace) ts += fz_now() - t1;
+    }
+    if (j->trace && t < 64) { fz_eval[t] += te; fz_stamp[t] += ts; fz_wait[t] += 0; }
+    if (err) j->err = err;
+    return err;
+}
+
+static int
+BSIM4v5FusedLoad(BSIM4v5model *model, CKTcircuit *ckt, BSIM4v5instance **InstArray, int n)
+{
+    int T = ngpool_threads(), t, k, i;
+    static int chunk = -1, trace = -1;
+    struct BSIM4v5FuseJob job;
+    double r0 = 0, g0 = 0;
+
+    if (chunk < 0) {
+        const char *e = getenv("NGSPICE_FUSE_CHUNK");
+        chunk = e ? atoi(e) : 64;
+        trace = getenv("NGSPICE_LOADTRACE") != NULL;
+        if (trace) { fz_reg = malloc(LT_MAX * sizeof(double)); fz_red = malloc(LT_MAX * sizeof(double)); }
+    }
+    if (!st.valid || st.nthreads != T || st.ninst != n)
+        stamp_tables_build(model, ckt, T);
+    if (chunk <= 0)
+        job.chunk = n;        /* whole range: no locality, for the A/B */
+    else
+        job.chunk = chunk;
+    job.inst = InstArray; job.ckt = ckt; job.trace = trace; job.err = 0;
+    if (trace) {
+        g0 = fz_now();
+        if (fz_calls == 0) {
+            long l2 = sysconf(_SC_LEVEL2_CACHE_SIZE), l3 = sysconf(_SC_LEVEL3_CACHE_SIZE);
+            fprintf(stderr, "LOADTRACE arch: inst=%d sizeof(instance)=%zu -> %.1f MB walked per load; chunk=%d (%.0f kB); "
+                            "matrix n=%d; shared entries=%d -> slots %.1f MB + private rhs %.1f MB; L2=%ld kB L3=%ld kB per sysconf\n",
+                    n, sizeof(BSIM4v5instance), n * sizeof(BSIM4v5instance) / 1048576.0, job.chunk, job.chunk * sizeof(BSIM4v5instance) / 1024.0,
+                    st.rhs_n, st.nshared, (double) T * st.nshared * 8 / 1048576.0, (double) T * (st.rhs_n + 1) * 8 / 1048576.0,
+                    l2 / 1024, l3 / 1024);
+        }
+        fz_T = T; fz_chunk = job.chunk; fz_nshared = st.nshared;
+    }
+    ngpool_run_chunk(T, BSIM4v5FuseItem, &job, 1);
+    if (trace) r0 = fz_now();
+    /* reduce the shared entries and the private RHS copies */
+    for (t = 0; t < T; t++) {
+        const double *sl = st.slots + (size_t) t * st.nshared;
+        const double *rhs = st.rhs_priv + (size_t) t * (st.rhs_n + 1);
+        for (k = 0; k < st.nshared; k++)
+            *st.targets[k] += sl[k];
+        for (i = 0; i <= st.rhs_n; i++)
+            ckt->CKTrhs[i] += rhs[i];
+    }
+    if (trace) {
+        double r1 = fz_now();
+        fz_reduce += r1 - r0; fz_calls++;
+        if (fz_nreg < LT_MAX) { fz_reg[fz_nreg] = r0 - g0; fz_red[fz_nreg] = r1 - r0; fz_nreg++; }
+    }
+    return job.err;
 }

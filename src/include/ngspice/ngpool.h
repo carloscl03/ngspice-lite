@@ -22,5 +22,7 @@ void ngpool_stop(void);
 /* run fn(i, arg) for i in [0, n) on the pool; returns the last non-zero
  * value returned by fn, 0 if all returned 0 */
 int ngpool_run(int n, ngpool_item_fn fn, void *arg);
+/* same, with an explicit chunk size (1 = one item per grab) */
+int ngpool_run_chunk(int n, ngpool_item_fn fn, void *arg, int chunk);
 
 #endif

@@ -2116,6 +2116,7 @@ do { if((here->ptr = SMPmakeElt(matrix, here->first, here->second)) == NULL){\
     /* store this in the first model only */
     model->BSIM4v5InstCount = InstCount;
     model->BSIM4v5InstanceArray = InstArray;
+    { extern void BSIM4v5StampTablesInvalidate(void); BSIM4v5StampTablesInvalidate(); }
     idx = 0;
     for (; model != NULL; model = BSIM4v5nextModel(model))
     {
