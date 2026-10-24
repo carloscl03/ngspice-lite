@@ -5633,6 +5633,27 @@ static double fz_now(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, 
 
 struct BSIM4v5FuseJob { BSIM4v5instance **inst; CKTcircuit *ckt; int chunk; int trace; int err; };
 
+struct BSIM4v5ReduceJob { CKTcircuit *ckt; int T; };
+
+/* reducer r: shared entries [k0, k1) and RHS rows [i0, i1), summed over all threads */
+static int
+BSIM4v5ReduceItem(int r, void *arg)
+{
+    struct BSIM4v5ReduceJob *j = (struct BSIM4v5ReduceJob *) arg;
+    int T = j->T, t, k, i;
+    int k0 = (int)((long) st.nshared * r / T), k1 = (int)((long) st.nshared * (r + 1) / T);
+    int i0 = (int)((long)(st.rhs_n + 1) * r / T), i1 = (int)((long)(st.rhs_n + 1) * (r + 1) / T);
+    for (t = 0; t < T; t++) {
+        const double *sl = st.slots + (size_t) t * st.nshared;
+        const double *rhs = st.rhs_priv + (size_t) t * (st.rhs_n + 1);
+        for (k = k0; k < k1; k++)
+            *st.targets[k] += sl[k];
+        for (i = i0; i < i1; i++)
+            j->ckt->CKTrhs[i] += rhs[i];
+    }
+    return 0;
+}
+
 static int
 BSIM4v5FuseItem(int t, void *arg)
 {
@@ -5694,14 +5715,25 @@ BSIM4v5FusedLoad(BSIM4v5model *model, CKTcircuit *ckt, BSIM4v5instance **InstArr
     }
     ngpool_run_chunk(T, BSIM4v5FuseItem, &job, 1);
     if (trace) r0 = fz_now();
-    /* reduce the shared entries and the private RHS copies */
-    for (t = 0; t < T; t++) {
-        const double *sl = st.slots + (size_t) t * st.nshared;
-        const double *rhs = st.rhs_priv + (size_t) t * (st.rhs_n + 1);
-        for (k = 0; k < st.nshared; k++)
-            *st.targets[k] += sl[k];
-        for (i = 0; i <= st.rhs_n; i++)
-            ckt->CKTrhs[i] += rhs[i];
+    /* reduce the shared entries and the private RHS copies: each pool
+       thread owns a range of entries / RHS rows, so no two threads add
+       into the same location (NGSPICE_FUSE_SREDUCE=1: serial, for A/B) */
+    {
+        static int sreduce = -1;
+        if (sreduce < 0) sreduce = getenv("NGSPICE_FUSE_SREDUCE") != NULL;
+        if (sreduce) {
+            for (t = 0; t < T; t++) {
+                const double *sl = st.slots + (size_t) t * st.nshared;
+                const double *rhs = st.rhs_priv + (size_t) t * (st.rhs_n + 1);
+                for (k = 0; k < st.nshared; k++)
+                    *st.targets[k] += sl[k];
+                for (i = 0; i <= st.rhs_n; i++)
+                    ckt->CKTrhs[i] += rhs[i];
+            }
+        } else {
+            struct BSIM4v5ReduceJob rj = { ckt, T };
+            ngpool_run_chunk(T, BSIM4v5ReduceItem, &rj, 1);
+        }
     }
     if (trace) {
         double r1 = fz_now();
