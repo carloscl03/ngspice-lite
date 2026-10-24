@@ -17,6 +17,13 @@ Author: 1985 Thomas L. Quarles
 extern bool ft_ngdebug;
 
 
+static double ct_tot_g; static long ct_calls_g;
+static void ct_report(void)
+{
+    if (ct_calls_g)
+        fprintf(stderr, "LOADTRACE convtest: calls=%ld total=%.3fs (%.1fus/call)\n", ct_calls_g, ct_tot_g, 1e6 * ct_tot_g / ct_calls_g);
+}
+
 int
 NIconvTest(CKTcircuit *ckt)
 {
@@ -100,7 +107,15 @@ NIconvTest(CKTcircuit *ckt)
     }
 
 #ifdef NEWCONV
-    i = CKTconvTest(ckt);
+    /* fork-lite diagnostic: time spent in the device convergence tests */
+    {
+        static int ct_on = -1; static double ct_total; static long ct_calls;
+        double ct0 = 0;
+        if (ct_on < 0) { ct_on = getenv("NGSPICE_LOADTRACE") != NULL; if (ct_on) atexit(ct_report); }
+        if (ct_on) ct0 = SPfrontEnd->IFseconds();
+        i = CKTconvTest(ckt);
+        if (ct_on) { ct_total += SPfrontEnd->IFseconds() - ct0; ct_calls++; ct_tot_g = ct_total; ct_calls_g = ct_calls; }
+    }
     /* The individual testers, called by CKTconvTest, set
      * ckt->CKTnoncon and ckt->CKTtroubleElt appropriately. */
     if (ckt->CKTnoncon != 0) {

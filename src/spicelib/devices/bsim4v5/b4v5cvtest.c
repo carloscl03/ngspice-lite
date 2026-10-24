@@ -21,13 +21,14 @@
 #include "ngspice/suffix.h"
 
 
-int
-BSIM4v5convTest(
-GENmodel *inModel,
-CKTcircuit *ckt)
+#include "ngspice/ngpool.h"
+
+/* fork-lite: the test for one instance; 1 = not converged. The former loop
+   body, unchanged except that the non-convergence exits return 1. */
+static int
+BSIM4v5convTestOne(BSIM4v5instance *here, CKTcircuit *ckt)
 {
-BSIM4v5model *model = (BSIM4v5model*)inModel;
-BSIM4v5instance *here;
+BSIM4v5model *model = BSIM4v5modPtr(here);
 double delvbd, delvbs, delvds, delvgd, delvgs;
 double delvdbd, delvsbs; 
 double delvbd_jct, delvbs_jct;
@@ -39,10 +40,6 @@ double Isestot, cseshat, Idedtot, cdedhat;
 double Igstot, cgshat, Igdtot, cgdhat, Igbtot, cgbhat;
 double tol0, tol1, tol2, tol3, tol4, tol5, tol6;
 
-    for (; model != NULL; model = BSIM4v5nextModel(model))
-    {    for (here = BSIM4v5instances(model); here != NULL ;
-              here=BSIM4v5nextInstance(here)) 
-         {
 	      vds = model->BSIM4v5type
                   * (*(ckt->CKTrhsOld + here->BSIM4v5dNodePrime)
                   - *(ckt->CKTrhsOld + here->BSIM4v5sNodePrime));
@@ -159,14 +156,12 @@ double tol0, tol1, tol2, tol3, tol4, tol5, tol6;
 
                   if ((fabs(cdhat - Idtot) >= tol0) || (fabs(cseshat - Isestot) >= tol1)
                       || (fabs(cdedhat - Idedtot) >= tol2))
-		  {   ckt->CKTnoncon++;
-                      return(OK);
+		  {   return 1;
                   } 
 
                   if ((fabs(cgshat - Igstot) >= tol3) || (fabs(cgdhat - Igdtot) >= tol4)
                       || (fabs(cgbhat - Igbtot) >= tol5))
-                  {   ckt->CKTnoncon++;
-                      return(OK);
+                  {   return 1;
                   }
 
                   Ibtot = here->BSIM4v5cbs + here->BSIM4v5cbd
@@ -188,9 +183,57 @@ double tol0, tol1, tol2, tol3, tol4, tol5, tol6;
                   tol6 = ckt->CKTreltol * MAX(fabs(cbhat), 
 			fabs(Ibtot)) + ckt->CKTabstol;
                   if (fabs(cbhat - Ibtot) > tol6) 
-		  {   ckt->CKTnoncon++;
-                      return(OK);
+		  {   return 1;
                   }
+              }
+    return 0;
+}
+
+struct BSIM4v5ConvJob { BSIM4v5instance **inst; CKTcircuit *ckt; int n, T; int bad[64]; };
+
+static int
+BSIM4v5ConvItem(int t, void *arg)
+{
+    struct BSIM4v5ConvJob *j = (struct BSIM4v5ConvJob *) arg;
+    int lo = (int)((long) j->n * t / j->T), hi = (int)((long) j->n * (t + 1) / j->T), i;
+    for (i = lo; i < hi; i++)
+        if (BSIM4v5convTestOne(j->inst[i], j->ckt)) { j->bad[t] = 1; return 0; }
+    j->bad[t] = 0;
+    return 0;
+}
+
+int
+BSIM4v5convTest(
+GENmodel *inModel,
+CKTcircuit *ckt)
+{
+BSIM4v5model *model = (BSIM4v5model*)inModel;
+BSIM4v5instance *here;
+#ifdef USE_OMP
+    {
+        /* fork-lite: one range per pool thread, each stops at its first
+           non-converged instance; the circuit flag is raised once, as before */
+        static int pconv = -1;
+        int T = ngpool_threads();
+        if (pconv < 0) pconv = getenv("NGSPICE_NOPCONV") == NULL;
+        if (pconv && T > 1 && T <= 64 && model->BSIM4v5InstanceArray && model->BSIM4v5InstCount >= ckt->CKTompMinInst) {
+            struct BSIM4v5ConvJob j;
+            int t;
+            j.inst = model->BSIM4v5InstanceArray; j.ckt = ckt; j.n = model->BSIM4v5InstCount; j.T = T;
+            ngpool_run_chunk(T, BSIM4v5ConvItem, &j, 1);
+            for (t = 0; t < T; t++)
+                if (j.bad[t]) { ckt->CKTnoncon++; return(OK); }
+            return(OK);
+        }
+    }
+#endif
+    for (; model != NULL; model = BSIM4v5nextModel(model))
+    {    for (here = BSIM4v5instances(model); here != NULL ;
+              here=BSIM4v5nextInstance(here))
+         {
+              if (BSIM4v5convTestOne(here, ckt))
+              {   ckt->CKTnoncon++;
+                  return(OK);
               }
          }
     }
