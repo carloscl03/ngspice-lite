@@ -582,9 +582,10 @@ static void klu_trace_line(const char *what, double dt, double gmin, SMPmatrix *
 {
     klu_numeric *num = Matrix->SMPkluMatrix->KLUmatrixNumeric;
     klu_symbolic *sym = Matrix->SMPkluMatrix->KLUmatrixSymbolic;
-    fprintf(stderr, "ST KLUFAC %s dt=%.1fms gmin=%.2e n=%u nz=%u lnz=%ld unz=%ld est=%.0f\n", what, 1e3 * dt, gmin,
+    fprintf(stderr, "ST KLUFAC %s dt=%.1fms gmin=%.2e n=%u nz=%u lnz=%ld unz=%ld est=%.0f btf_blocks=%ld maxblock=%ld nzoff=%ld\n", what, 1e3 * dt, gmin,
             Matrix->SMPkluMatrix->KLUmatrixN, Matrix->SMPkluMatrix->KLUmatrixNZ,
-            num ? (long) num->lnz : -1L, num ? (long) num->unz : -1L, sym ? sym->lnz + sym->unz : -1.0);
+            num ? (long) num->lnz : -1L, num ? (long) num->unz : -1L, sym ? sym->lnz + sym->unz : -1.0,
+            sym ? (long) sym->nblocks : -1L, sym ? (long) sym->maxblock : -1L, sym ? (long) sym->nzoff : -1L);
 }
 
 int
