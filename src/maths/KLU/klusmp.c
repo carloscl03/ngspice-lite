@@ -586,6 +586,11 @@ static void klu_trace_line(const char *what, double dt, double gmin, SMPmatrix *
             Matrix->SMPkluMatrix->KLUmatrixN, Matrix->SMPkluMatrix->KLUmatrixNZ,
             num ? (long) num->lnz : -1L, num ? (long) num->unz : -1L, sym ? sym->lnz + sym->unz : -1.0,
             sym ? (long) sym->nblocks : -1L, sym ? (long) sym->maxblock : -1L, sym ? (long) sym->nzoff : -1L);
+    /* actual flop count of this LU (klu_flops walks L and U: O(lnz+unz), trace only) */
+    if (num && sym && Matrix->SMPkluMatrix->KLUmatrixCommon &&
+        klu_flops(sym, num, Matrix->SMPkluMatrix->KLUmatrixCommon))
+        fprintf(stderr, "ST KLUFLOPS est=%.3g actual=%.3g ordering=%ld\n", sym->est_flops,
+                Matrix->SMPkluMatrix->KLUmatrixCommon->flops, (long) sym->ordering);
 }
 
 int
@@ -1172,6 +1177,7 @@ SMPnewMatrix (SMPmatrix *Matrix, int size)
 
         /* Initialize the KLU Common Data Structure */
         klu_defaults (Matrix->SMPkluMatrix->KLUmatrixCommon) ;
+        { const char *o = getenv("NGSPICE_KLU_ORDERING"); if (o) Matrix->SMPkluMatrix->KLUmatrixCommon->ordering = atoi(o); }  /* fork-lite experiment: 0 AMD, 1 COLAMD */
         Matrix->SMPkluMatrix->KLUmatrixCommon->memgrow = Matrix->CKTkluMemGrowFactor ;
 
         /* Allocate KLU data structures */
@@ -1218,6 +1224,7 @@ SMPnewMatrixKLUforCIDER (SMPmatrix *Matrix, int size, unsigned int KLUmatrixIsCo
 
         /* Initialize the KLU Common Data Structure */
         klu_defaults (Matrix->SMPkluMatrix->KLUmatrixCommon) ;
+        { const char *o = getenv("NGSPICE_KLU_ORDERING"); if (o) Matrix->SMPkluMatrix->KLUmatrixCommon->ordering = atoi(o); }  /* fork-lite experiment: 0 AMD, 1 COLAMD */
 
         /* Allocate KLU data structures */
         Matrix->SMPkluMatrix->KLUmatrixN = (unsigned int)size ;

@@ -381,6 +381,10 @@ static void factor2
 /* === KLU_factor =========================================================== */
 /* ========================================================================== */
 
+#ifndef COMPLEX
+int klu_rf_factor_gen = 0;   /* fork-lite: bumped on every numeric factorisation */
+#endif
+
 KLU_numeric *KLU_factor         /* returns NULL if error, or a valid
                                    KLU_numeric object if successful */
 (
@@ -406,6 +410,9 @@ KLU_numeric *KLU_factor         /* returns NULL if error, or a valid
     {
         return (NULL) ;
     }
+#ifndef COMPLEX
+    klu_rf_factor_gen++ ;
+#endif
     Common->status = KLU_OK ;
     Common->numerical_rank = EMPTY ;
     Common->singular_col = EMPTY ;

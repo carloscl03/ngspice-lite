@@ -51,7 +51,15 @@ static struct {
     int disabled;
     int env_read;
     pthread_t th[NGPOOL_MAXTHREADS];
-    _Atomic int generation;
+    /* one wake-up slot per worker, so a run on the first `active` threads
+       does not touch the others (they keep sleeping: a spinning SMT sibling
+       slows down latency-bound work such as the KLU refactorisation) */
+    struct wslot {
+        _Atomic int gen;
+        pthread_mutex_t mu;
+        pthread_cond_t cv;
+        char pad[64];
+    } w[NGPOOL_MAXTHREADS];
     _Atomic int next;
     _Atomic int done;
     _Atomic int error;
@@ -59,6 +67,7 @@ static struct {
     ngpool_item_fn fn;
     void *arg;
     int n;
+    int active;                /* threads taking part in the current run */
     pthread_mutex_t mu;
     pthread_cond_t cv;
 } pool;
@@ -87,6 +96,14 @@ static void read_env(void)
     pool.disabled = env_int("NGSPICE_NOPOOL", 0);
     pthread_mutex_init(&pool.mu, NULL);
     pthread_cond_init(&pool.cv, NULL);
+    {
+        int t;
+        for (t = 0; t < NGPOOL_MAXTHREADS; t++) {
+            atomic_store(&pool.w[t].gen, 0);
+            pthread_mutex_init(&pool.w[t].mu, NULL);
+            pthread_cond_init(&pool.w[t].cv, NULL);
+        }
+    }
 }
 
 
@@ -129,28 +146,33 @@ static void pin_self(int tid)
 }
 
 
+static _Thread_local int ng_tid = 0;
+int ngpool_tid(void) { return ng_tid; }
+
 static void *worker(void *v)
 {
     int tid = (int)(intptr_t)v;
+    ng_tid = tid;
     int seen = 0;
     if (pool.pin)
         pin_self(tid);
+    struct wslot *ws = &pool.w[tid];
     for (;;) {
         long i = 0;
-        while (atomic_load_explicit(&pool.generation, memory_order_acquire) == seen) {
+        while (atomic_load_explicit(&ws->gen, memory_order_acquire) == seen) {
             if (i < pool.spin) {
                 i++;
                 NGPOOL_PAUSE();
             } else if (pool.wait == 0) {
                 sched_yield();
             } else {
-                pthread_mutex_lock(&pool.mu);
-                while (atomic_load(&pool.generation) == seen)
-                    pthread_cond_wait(&pool.cv, &pool.mu);
-                pthread_mutex_unlock(&pool.mu);
+                pthread_mutex_lock(&ws->mu);
+                while (atomic_load(&ws->gen) == seen)
+                    pthread_cond_wait(&ws->cv, &ws->mu);
+                pthread_mutex_unlock(&ws->mu);
             }
         }
-        seen = atomic_load(&pool.generation);
+        seen = atomic_load(&ws->gen);
         if (atomic_load(&pool.quit))
             break;
         do_work();
@@ -160,15 +182,20 @@ static void *worker(void *v)
 }
 
 
-static void wake_all(void)
+/* wake workers 1..nwake-1 */
+static void wake_n(int nwake)
 {
-    if (pool.wait == 1) {
-        pthread_mutex_lock(&pool.mu);
-        atomic_fetch_add_explicit(&pool.generation, 1, memory_order_release);
-        pthread_cond_broadcast(&pool.cv);
-        pthread_mutex_unlock(&pool.mu);
-    } else {
-        atomic_fetch_add_explicit(&pool.generation, 1, memory_order_release);
+    int t;
+    for (t = 1; t < nwake; t++) {
+        struct wslot *ws = &pool.w[t];
+        if (pool.wait == 1) {
+            pthread_mutex_lock(&ws->mu);
+            atomic_fetch_add_explicit(&ws->gen, 1, memory_order_release);
+            pthread_cond_signal(&ws->cv);
+            pthread_mutex_unlock(&ws->mu);
+        } else {
+            atomic_fetch_add_explicit(&ws->gen, 1, memory_order_release);
+        }
     }
 }
 
@@ -179,7 +206,7 @@ void ngpool_stop(void)
     if (pool.nthreads < 2)
         return;
     atomic_store(&pool.quit, 1);
-    wake_all();
+    wake_n(pool.nthreads);
     for (t = 1; t < pool.nthreads; t++)
         pthread_join(pool.th[t], NULL);
     atomic_store(&pool.quit, 0);
@@ -226,17 +253,30 @@ int ngpool_run_chunk(int n, ngpool_item_fn fn, void *arg, int chunk)
     return r;
 }
 
+int ngpool_run_n(int n, ngpool_item_fn fn, void *arg, int chunk, int nworkers)
+{
+    int saved = pool.chunk, r;
+    pool.chunk = chunk > 0 ? chunk : 1;
+    pool.active = (nworkers > 0 && nworkers < pool.nthreads) ? nworkers : pool.nthreads;
+    r = ngpool_run(n, fn, arg);
+    pool.active = pool.nthreads;
+    pool.chunk = saved;
+    return r;
+}
+
 int ngpool_run(int n, ngpool_item_fn fn, void *arg)
 {
     pool.fn = fn;
     pool.arg = arg;
     pool.n = n;
+    if (pool.active < 1 || pool.active > pool.nthreads)
+        pool.active = pool.nthreads;
     atomic_store(&pool.next, 0);
     atomic_store(&pool.done, 0);
     atomic_store(&pool.error, 0);
-    wake_all();
+    wake_n(pool.active);
     do_work();
-    while (atomic_load_explicit(&pool.done, memory_order_acquire) < pool.nthreads - 1)
+    while (atomic_load_explicit(&pool.done, memory_order_acquire) < pool.active - 1)
         NGPOOL_PAUSE();
     return atomic_load(&pool.error);
 }
@@ -245,8 +285,10 @@ int ngpool_run(int n, ngpool_item_fn fn, void *arg)
 
 void ngpool_stop(void) { }
 int ngpool_configure(int nthreads) { NG_IGNORE(nthreads); return 0; }
+int ngpool_tid(void) { return 0; }
 int ngpool_threads(void) { return 0; }
 int ngpool_run_chunk(int n, ngpool_item_fn fn, void *arg, int chunk) { NG_IGNORE(chunk); return ngpool_run(n, fn, arg); }
+int ngpool_run_n(int n, ngpool_item_fn fn, void *arg, int chunk, int nworkers) { NG_IGNORE(chunk); NG_IGNORE(nworkers); return ngpool_run(n, fn, arg); }
 
 int ngpool_run(int n, ngpool_item_fn fn, void *arg)
 {

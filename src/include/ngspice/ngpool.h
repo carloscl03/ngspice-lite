@@ -17,6 +17,8 @@ struct ngpool_devjob {
  * returns the number in use, 0 when the pool is off */
 int ngpool_configure(int nthreads);
 int ngpool_threads(void);
+/* index of the calling thread inside the pool: 0 for the master */
+int ngpool_tid(void);
 void ngpool_stop(void);
 
 /* run fn(i, arg) for i in [0, n) on the pool; returns the last non-zero
@@ -24,5 +26,8 @@ void ngpool_stop(void);
 int ngpool_run(int n, ngpool_item_fn fn, void *arg);
 /* same, with an explicit chunk size (1 = one item per grab) */
 int ngpool_run_chunk(int n, ngpool_item_fn fn, void *arg, int chunk);
+/* same, on the first nworkers threads only (0 = all); for memory-latency
+   bound work that gets slower on SMT siblings */
+int ngpool_run_n(int n, ngpool_item_fn fn, void *arg, int chunk, int nworkers);
 
 #endif
