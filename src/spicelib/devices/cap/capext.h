@@ -17,6 +17,8 @@ extern void CAPsPrint(GENmodel*,CKTcircuit*);
 extern int CAPsSetup(SENstruct *,GENmodel*);
 extern int CAPsUpdate(GENmodel*,CKTcircuit*);
 extern int CAPsetup(SMPmatrix*,GENmodel*,CKTcircuit*,int*);
+extern int CAPmDelete(GENmodel*);
+extern void CAPStampTablesInvalidate(void);
 extern int CAPtemp(GENmodel*,CKTcircuit*);
 extern int CAPtrunc(GENmodel*,CKTcircuit*,double*);
 extern int CAPsoaCheck(CKTcircuit *, GENmodel *);

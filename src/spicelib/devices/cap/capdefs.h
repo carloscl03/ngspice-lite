@@ -111,6 +111,8 @@ typedef struct sCAPmodel {      /* model structure for a capacitor */
     double CAPdi;         /* Relative dielectric constant */
     double CAPthick;      /* Insulator thickness */
     double CAPbv_max;     /* Maximum capacitor voltage */
+    struct sCAPinstance **CAPinstArray; /* fork-lite: all instances of all models (first model only) */
+    int CAPinstCount;
     unsigned CAPmCapGiven      : 1;    /* flag indicates default capacitance given */
     unsigned CAPcjGiven        : 1;    /* Unit Area Capacitance ( F/ M**2 ) */
     unsigned CAPcjswGiven      : 1;    /* Unit Length Sidewall Capacitance( F/M )*/

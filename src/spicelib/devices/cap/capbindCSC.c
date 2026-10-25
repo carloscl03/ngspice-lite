@@ -32,6 +32,7 @@ CAPbindCSC (GENmodel *inModel, CKTcircuit *ckt)
         }
     }
 
+    CAPStampTablesInvalidate() ;
     return (OK) ;
 }
 
@@ -56,6 +57,7 @@ CAPbindCSCComplex (GENmodel *inModel, CKTcircuit *ckt)
         }
     }
 
+    CAPStampTablesInvalidate() ;
     return (OK) ;
 }
 
@@ -80,5 +82,6 @@ CAPbindCSCComplexToReal (GENmodel *inModel, CKTcircuit *ckt)
         }
     }
 
+    CAPStampTablesInvalidate() ;
     return (OK) ;
 }

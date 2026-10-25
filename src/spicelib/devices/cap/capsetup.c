@@ -117,6 +117,31 @@ do { if((here->ptr = SMPmakeElt(matrix, here->first, here->second)) == NULL){\
             TSTALLOC(CAPnegPosPtr,CAPnegNode,CAPposNode);
         }
     }
+
+    /* fork-lite: flat array of every instance (all models) for the pool
+       loops in CAPload/CAPtrunc; kept in the first model like BSIM4 does */
+    {
+        CAPmodel *first = (CAPmodel*)inModel;
+        int n = 0, i = 0;
+        for (model = first; model != NULL; model = CAPnextModel(model))
+            for (here = CAPinstances(model); here != NULL; here = CAPnextInstance(here))
+                n++;
+        tfree(first->CAPinstArray);
+        first->CAPinstArray = n ? TMALLOC(CAPinstance*, n) : NULL;
+        first->CAPinstCount = n;
+        for (model = first; model != NULL; model = CAPnextModel(model))
+            for (here = CAPinstances(model); here != NULL; here = CAPnextInstance(here))
+                first->CAPinstArray[i++] = here;
+        CAPStampTablesInvalidate();
+    }
     return(OK);
+}
+
+int
+CAPmDelete(GENmodel *gen_model)
+{
+    CAPmodel *model = (CAPmodel*) gen_model;
+    tfree(model->CAPinstArray);
+    return OK;
 }
 
