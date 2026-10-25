@@ -5705,6 +5705,11 @@ BSIM4v5FusedLoad(BSIM4v5model *model, CKTcircuit *ckt, BSIM4v5instance **InstArr
         g0 = fz_now();
         if (fz_calls == 0) {
             long l2 = sysconf(_SC_LEVEL2_CACHE_SIZE), l3 = sysconf(_SC_LEVEL3_CACHE_SIZE);
+            if (getenv("NGSPICE_INSTADDR")) {   /* fork-lite: instance addresses for the valgrind access histogram */
+                int ia;
+                for (ia = 0; ia < n; ia++)
+                    fprintf(stderr, "ST INSTADDR %p\n", (void *) InstArray[ia]);
+            }
             fprintf(stderr, "LOADTRACE arch: inst=%d sizeof(instance)=%zu -> %.1f MB walked per load; chunk=%d (%.0f kB); "
                             "matrix n=%d; shared entries=%d -> slots %.1f MB + private rhs %.1f MB; L2=%ld kB L3=%ld kB per sysconf\n",
                     n, sizeof(BSIM4v5instance), n * sizeof(BSIM4v5instance) / 1048576.0, job.chunk, job.chunk * sizeof(BSIM4v5instance) / 1024.0,

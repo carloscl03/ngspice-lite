@@ -20,29 +20,28 @@ File: bsim4v5def.h
 
 typedef struct sBSIM4v5instance
 {
-
     struct GENinstance gen;
-
 #define BSIM4v5modPtr(inst) ((struct sBSIM4v5model *)((inst)->gen.GENmodPtr))
 #define BSIM4v5nextInstance(inst) ((struct sBSIM4v5instance *)((inst)->gen.GENnextInstance))
 #define BSIM4v5name gen.GENname
 #define BSIM4v5states gen.GENstate
-
     const int BSIM4v5dNode;
     const int BSIM4v5gNodeExt;
     const int BSIM4v5sNode;
     const int BSIM4v5bNode;
-    int BSIM4v5dNodePrime;
-    int BSIM4v5gNodePrime;
-    int BSIM4v5gNodeMid;
-    int BSIM4v5sNodePrime;
-    int BSIM4v5bNodePrime;
-    int BSIM4v5dbNode;
-    int BSIM4v5sbNode;
-    int BSIM4v5qNode;
 
+    /* fork-lite: field order. The const terminal nodes above must stay right
+       after gen (CKTbindNode writes them by position). The 227 fields below
+       are the ones a transient Newton iteration touches (sky130 BSIM4.5 flags:
+       rbodyMod=1, rgateMod=0, trnqsMod=0; measured with valgrind lackey on
+       every memory access of a run), kept contiguous so that one instance
+       costs ~29 cache lines instead of 43 of 72 with them scattered. */
+    int BSIM4v5dNodePrime;
+    int BSIM4v5gNodeMid;
+    int BSIM4v5bNodePrime;
+    int BSIM4v5sbNode;
     double BSIM4v5ueff;
-    double BSIM4v5thetavth; 
+    double BSIM4v5thetavth;
     double BSIM4v5von;
     double BSIM4v5vdsat;
     double BSIM4v5cgdo;
@@ -54,100 +53,37 @@ typedef struct sBSIM4v5instance
     double BSIM4v5grbpb;
     double BSIM4v5grbps;
     double BSIM4v5grbpd;
-
     double BSIM4v5vjsmFwd;
-    double BSIM4v5vjsmRev;
     double BSIM4v5vjdmFwd;
-    double BSIM4v5vjdmRev;
-    double BSIM4v5XExpBVS;
-    double BSIM4v5XExpBVD;
-    double BSIM4v5SslpFwd;
-    double BSIM4v5SslpRev;
-    double BSIM4v5DslpFwd;
-    double BSIM4v5DslpRev;
-    double BSIM4v5IVjsmFwd;
-    double BSIM4v5IVjsmRev;
-    double BSIM4v5IVjdmFwd;
-    double BSIM4v5IVjdmRev;
-
     double BSIM4v5grgeltd;
     double BSIM4v5Pseff;
     double BSIM4v5Pdeff;
     double BSIM4v5Aseff;
     double BSIM4v5Adeff;
-
-    double BSIM4v5l;
-    double BSIM4v5w;
-    double BSIM4v5drainArea;
-    double BSIM4v5sourceArea;
-    double BSIM4v5drainSquares;
-    double BSIM4v5sourceSquares;
-    double BSIM4v5drainPerimeter;
-    double BSIM4v5sourcePerimeter;
     double BSIM4v5sourceConductance;
     double BSIM4v5drainConductance;
-     /* stress effect instance param */
-    double BSIM4v5sa;
-    double BSIM4v5sb;
-    double BSIM4v5sd;
-    double BSIM4v5sca;
-    double BSIM4v5scb;
-    double BSIM4v5scc;
-    double BSIM4v5sc;
-
-    double BSIM4v5rbdb;
-    double BSIM4v5rbsb;
-    double BSIM4v5rbpb;
-    double BSIM4v5rbps;
-    double BSIM4v5rbpd;
-    
-    double BSIM4v5delvto;
-    double BSIM4v5mulu0;
-    double BSIM4v5xgw;
-    double BSIM4v5ngcon;
-    double BSIM4v5dtemp;
-
-     /* added here to account stress effect instance dependence */
     double BSIM4v5u0temp;
     double BSIM4v5vsattemp;
     double BSIM4v5vth0;
     double BSIM4v5vfb;
     double BSIM4v5vfbzb;
-    double BSIM4v5vtfbphi1;
     double BSIM4v5vtfbphi2;
-    double BSIM4v5k2;
     double BSIM4v5vbsc;
     double BSIM4v5k2ox;
     double BSIM4v5eta0;
-
-    double BSIM4v5icVDS;
-    double BSIM4v5icVGS;
-    double BSIM4v5icVBS;
     double BSIM4v5nf;
     double BSIM4v5m;
     int BSIM4v5off;
-    int BSIM4v5mode;
     int BSIM4v5trnqsMod;
-    int BSIM4v5acnqsMod;
     int BSIM4v5rbodyMod;
-    int BSIM4v5rgateMod;
-    int BSIM4v5geoMod;
-    int BSIM4v5rgeoMod;
-    int BSIM4v5min;
-
-
-    /* OP point */
     double BSIM4v5Vgsteff;
     double BSIM4v5vgs_eff;
-    double BSIM4v5vgd_eff;
     double BSIM4v5dvgs_eff_dvg;
-    double BSIM4v5dvgd_eff_dvg;
     double BSIM4v5Vdseff;
     double BSIM4v5nstar;
     double BSIM4v5Abulk;
     double BSIM4v5EsatL;
     double BSIM4v5AbovVgst2Vtm;
-    double BSIM4v5qinv;
     double BSIM4v5cd;
     double BSIM4v5cbs;
     double BSIM4v5cbd;
@@ -159,7 +95,6 @@ typedef struct sBSIM4v5instance
     double BSIM4v5gmbs;
     double BSIM4v5gbd;
     double BSIM4v5gbs;
-
     double BSIM4v5gbbs;
     double BSIM4v5gbgs;
     double BSIM4v5gbds;
@@ -171,7 +106,6 @@ typedef struct sBSIM4v5instance
     double BSIM4v5ggislg;
     double BSIM4v5ggisls;
     double BSIM4v5ggislb;
-
     double BSIM4v5Igcs;
     double BSIM4v5gIgcsg;
     double BSIM4v5gIgcsd;
@@ -182,40 +116,27 @@ typedef struct sBSIM4v5instance
     double BSIM4v5gIgcdd;
     double BSIM4v5gIgcds;
     double BSIM4v5gIgcdb;
-
     double BSIM4v5Igs;
     double BSIM4v5gIgsg;
-    double BSIM4v5gIgss;
     double BSIM4v5Igd;
     double BSIM4v5gIgdg;
     double BSIM4v5gIgdd;
-
     double BSIM4v5Igb;
     double BSIM4v5gIgbg;
     double BSIM4v5gIgbd;
     double BSIM4v5gIgbs;
     double BSIM4v5gIgbb;
-
     double BSIM4v5grdsw;
     double BSIM4v5IdovVds;
-    double BSIM4v5gcrg;
-    double BSIM4v5gcrgd;
-    double BSIM4v5gcrgg;
-    double BSIM4v5gcrgs;
-    double BSIM4v5gcrgb;
-
     double BSIM4v5gstot;
     double BSIM4v5gstotd;
     double BSIM4v5gstotg;
-    double BSIM4v5gstots;
     double BSIM4v5gstotb;
-
     double BSIM4v5gdtot;
     double BSIM4v5gdtotd;
     double BSIM4v5gdtotg;
     double BSIM4v5gdtots;
     double BSIM4v5gdtotb;
-
     double BSIM4v5cggb;
     double BSIM4v5cgdb;
     double BSIM4v5cgsb;
@@ -226,32 +147,14 @@ typedef struct sBSIM4v5instance
     double BSIM4v5cddb;
     double BSIM4v5cdsb;
     double BSIM4v5csgb;
-    double BSIM4v5csdb;
     double BSIM4v5cssb;
-    double BSIM4v5cgbb;
     double BSIM4v5cdbb;
-    double BSIM4v5csbb;
     double BSIM4v5cbbb;
     double BSIM4v5capbd;
     double BSIM4v5capbs;
-
-    double BSIM4v5cqgb;
-    double BSIM4v5cqdb;
-    double BSIM4v5cqsb;
-    double BSIM4v5cqbb;
-
     double BSIM4v5qgate;
-    double BSIM4v5qbulk;
     double BSIM4v5qdrn;
-    double BSIM4v5qsrc;
-    double BSIM4v5qdef;
-
-    double BSIM4v5qchqs;
-    double BSIM4v5taunet;
     double BSIM4v5gtau;
-    double BSIM4v5gtg;
-    double BSIM4v5gtd;
-    double BSIM4v5gts;
     double BSIM4v5gtb;
     double BSIM4v5SjctTempRevSatCur;
     double BSIM4v5DjctTempRevSatCur;
@@ -259,138 +162,10 @@ typedef struct sBSIM4v5instance
     double BSIM4v5DswTempRevSatCur;
     double BSIM4v5SswgTempRevSatCur;
     double BSIM4v5DswgTempRevSatCur;
-
-    struct bsim4v5SizeDependParam  *pParam;
-
-    unsigned BSIM4v5lGiven :1;
-    unsigned BSIM4v5wGiven :1;
-    unsigned BSIM4v5mGiven :1;
-    unsigned BSIM4v5nfGiven :1;
-    unsigned BSIM4v5minGiven :1;
-    unsigned BSIM4v5drainAreaGiven :1;
-    unsigned BSIM4v5sourceAreaGiven    :1;
-    unsigned BSIM4v5drainSquaresGiven  :1;
-    unsigned BSIM4v5sourceSquaresGiven :1;
-    unsigned BSIM4v5drainPerimeterGiven    :1;
-    unsigned BSIM4v5sourcePerimeterGiven   :1;
-    unsigned BSIM4v5saGiven :1;
-    unsigned BSIM4v5sbGiven :1;
-    unsigned BSIM4v5sdGiven :1;
-    unsigned BSIM4v5scaGiven :1;
-    unsigned BSIM4v5scbGiven :1;
-    unsigned BSIM4v5sccGiven :1;
-    unsigned BSIM4v5scGiven :1;
-    unsigned BSIM4v5rbdbGiven   :1;
-    unsigned BSIM4v5rbsbGiven   :1;
-    unsigned BSIM4v5rbpbGiven   :1;
-    unsigned BSIM4v5rbpdGiven   :1;
-    unsigned BSIM4v5rbpsGiven   :1;
-    unsigned BSIM4v5delvtoGiven   :1;
-    unsigned BSIM4v5mulu0Given   :1;
-    unsigned BSIM4v5xgwGiven   :1;
-    unsigned BSIM4v5ngconGiven   :1;
-    unsigned BSIM4v5dtempGiven : 1;
-    unsigned BSIM4v5icVDSGiven :1;
-    unsigned BSIM4v5icVGSGiven :1;
-    unsigned BSIM4v5icVBSGiven :1;
-    unsigned BSIM4v5trnqsModGiven :1;
-    unsigned BSIM4v5acnqsModGiven :1;
-    unsigned BSIM4v5rbodyModGiven :1;
-    unsigned BSIM4v5rgateModGiven :1;
-    unsigned BSIM4v5geoModGiven :1;
-    unsigned BSIM4v5rgeoModGiven :1;
-
-
-    double *BSIM4v5DPdPtr;
-    double *BSIM4v5DPdpPtr;
-    double *BSIM4v5DPgpPtr;
-    double *BSIM4v5DPgmPtr;
-    double *BSIM4v5DPspPtr;
-    double *BSIM4v5DPbpPtr;
-    double *BSIM4v5DPdbPtr;
-
-    double *BSIM4v5DdPtr;
-    double *BSIM4v5DdpPtr;
-
-    double *BSIM4v5GPdpPtr;
-    double *BSIM4v5GPgpPtr;
-    double *BSIM4v5GPgmPtr;
-    double *BSIM4v5GPgePtr;
-    double *BSIM4v5GPspPtr;
-    double *BSIM4v5GPbpPtr;
-
-    double *BSIM4v5GMdpPtr;
-    double *BSIM4v5GMgpPtr;
-    double *BSIM4v5GMgmPtr;
-    double *BSIM4v5GMgePtr;
-    double *BSIM4v5GMspPtr;
-    double *BSIM4v5GMbpPtr;
-
-    double *BSIM4v5GEdpPtr;
-    double *BSIM4v5GEgpPtr;
-    double *BSIM4v5GEgmPtr;
-    double *BSIM4v5GEgePtr;
-    double *BSIM4v5GEspPtr;
-    double *BSIM4v5GEbpPtr;
-
-    double *BSIM4v5SPdpPtr;
-    double *BSIM4v5SPgpPtr;
-    double *BSIM4v5SPgmPtr;
-    double *BSIM4v5SPsPtr;
-    double *BSIM4v5SPspPtr;
-    double *BSIM4v5SPbpPtr;
-    double *BSIM4v5SPsbPtr;
-
-    double *BSIM4v5SspPtr;
-    double *BSIM4v5SsPtr;
-
-    double *BSIM4v5BPdpPtr;
-    double *BSIM4v5BPgpPtr;
-    double *BSIM4v5BPgmPtr;
-    double *BSIM4v5BPspPtr;
-    double *BSIM4v5BPdbPtr;
-    double *BSIM4v5BPbPtr;
-    double *BSIM4v5BPsbPtr;
-    double *BSIM4v5BPbpPtr;
-
-    double *BSIM4v5DBdpPtr;
-    double *BSIM4v5DBdbPtr;
-    double *BSIM4v5DBbpPtr;
-    double *BSIM4v5DBbPtr;
-
-    double *BSIM4v5SBspPtr;
-    double *BSIM4v5SBbpPtr;
-    double *BSIM4v5SBbPtr;
-    double *BSIM4v5SBsbPtr;
-
-    double *BSIM4v5BdbPtr;
-    double *BSIM4v5BbpPtr;
-    double *BSIM4v5BsbPtr;
-    double *BSIM4v5BbPtr;
-
-    double *BSIM4v5DgpPtr;
-    double *BSIM4v5DspPtr;
-    double *BSIM4v5DbpPtr;
-    double *BSIM4v5SdpPtr;
-    double *BSIM4v5SgpPtr;
-    double *BSIM4v5SbpPtr;
-
-    double *BSIM4v5QdpPtr;
-    double *BSIM4v5QgpPtr;
-    double *BSIM4v5QspPtr;
-    double *BSIM4v5QbpPtr;
-    double *BSIM4v5QqPtr;
-    double *BSIM4v5DPqPtr;
-    double *BSIM4v5GPqPtr;
-    double *BSIM4v5SPqPtr;
-
-    /* fork-lite: where BSIM4v5LoadRhsMat stamps; equal to the *Ptr above,
-       or a per-thread slot for entries shared between pool threads */
     double *BSIM4v5BPbPtrRed;
     double *BSIM4v5BPbpPtrRed;
     double *BSIM4v5BPdbPtrRed;
     double *BSIM4v5BPdpPtrRed;
-    double *BSIM4v5BPgmPtrRed;
     double *BSIM4v5BPgpPtrRed;
     double *BSIM4v5BPsbPtrRed;
     double *BSIM4v5BPspPtrRed;
@@ -406,114 +181,37 @@ typedef struct sBSIM4v5instance
     double *BSIM4v5DPdPtrRed;
     double *BSIM4v5DPdbPtrRed;
     double *BSIM4v5DPdpPtrRed;
-    double *BSIM4v5DPgmPtrRed;
     double *BSIM4v5DPgpPtrRed;
-    double *BSIM4v5DPqPtrRed;
     double *BSIM4v5DPspPtrRed;
-    double *BSIM4v5DbpPtrRed;
     double *BSIM4v5DdPtrRed;
     double *BSIM4v5DdpPtrRed;
-    double *BSIM4v5DgpPtrRed;
-    double *BSIM4v5DspPtrRed;
-    double *BSIM4v5GEbpPtrRed;
-    double *BSIM4v5GEdpPtrRed;
-    double *BSIM4v5GEgePtrRed;
-    double *BSIM4v5GEgmPtrRed;
-    double *BSIM4v5GEgpPtrRed;
-    double *BSIM4v5GEspPtrRed;
-    double *BSIM4v5GMbpPtrRed;
-    double *BSIM4v5GMdpPtrRed;
-    double *BSIM4v5GMgePtrRed;
-    double *BSIM4v5GMgmPtrRed;
-    double *BSIM4v5GMgpPtrRed;
-    double *BSIM4v5GMspPtrRed;
     double *BSIM4v5GPbpPtrRed;
     double *BSIM4v5GPdpPtrRed;
-    double *BSIM4v5GPgePtrRed;
-    double *BSIM4v5GPgmPtrRed;
     double *BSIM4v5GPgpPtrRed;
-    double *BSIM4v5GPqPtrRed;
     double *BSIM4v5GPspPtrRed;
-    double *BSIM4v5QbpPtrRed;
-    double *BSIM4v5QdpPtrRed;
-    double *BSIM4v5QgpPtrRed;
-    double *BSIM4v5QqPtrRed;
-    double *BSIM4v5QspPtrRed;
     double *BSIM4v5SBbPtrRed;
     double *BSIM4v5SBbpPtrRed;
     double *BSIM4v5SBsbPtrRed;
     double *BSIM4v5SBspPtrRed;
     double *BSIM4v5SPbpPtrRed;
     double *BSIM4v5SPdpPtrRed;
-    double *BSIM4v5SPgmPtrRed;
     double *BSIM4v5SPgpPtrRed;
-    double *BSIM4v5SPqPtrRed;
     double *BSIM4v5SPsPtrRed;
     double *BSIM4v5SPsbPtrRed;
     double *BSIM4v5SPspPtrRed;
-    double *BSIM4v5SbpPtrRed;
-    double *BSIM4v5SdpPtrRed;
-    double *BSIM4v5SgpPtrRed;
     double *BSIM4v5SsPtrRed;
     double *BSIM4v5SspPtrRed;
-
 #ifdef USE_OMP
-    /* per instance storage of results, to update matrix at a later stge */
     double BSIM4v5rhsdPrime;
     double BSIM4v5rhsgPrime;
-    double BSIM4v5rhsgExt;
-    double BSIM4v5grhsMid;
     double BSIM4v5rhsbPrime;
     double BSIM4v5rhssPrime;
     double BSIM4v5rhsdb;
     double BSIM4v5rhssb;
-    double BSIM4v5rhsd;
-    double BSIM4v5rhss;
-    double BSIM4v5rhsq;
-
-    double BSIM4v5_1;
-    double BSIM4v5_2;
-    double BSIM4v5_3;
-    double BSIM4v5_4;
-    double BSIM4v5_5;
-    double BSIM4v5_6;
-    double BSIM4v5_7;
-    double BSIM4v5_8;
-    double BSIM4v5_9;
-    double BSIM4v5_10;
-    double BSIM4v5_11;
-    double BSIM4v5_12;
-    double BSIM4v5_13;
-    double BSIM4v5_14;
-    double BSIM4v5_15;
-    double BSIM4v5_16;
-    double BSIM4v5_17;
-    double BSIM4v5_18;
-    double BSIM4v5_19;
-    double BSIM4v5_20;
-    double BSIM4v5_21;
-    double BSIM4v5_22;
-    double BSIM4v5_23;
-    double BSIM4v5_24;
-    double BSIM4v5_25;
-    double BSIM4v5_26;
-    double BSIM4v5_27;
-    double BSIM4v5_28;
-    double BSIM4v5_29;
-    double BSIM4v5_30;
-    double BSIM4v5_31;
-    double BSIM4v5_32;
-    double BSIM4v5_33;
     double BSIM4v5_34;
     double BSIM4v5_35;
     double BSIM4v5_36;
     double BSIM4v5_37;
-    double BSIM4v5_38;
-    double BSIM4v5_39;
-    double BSIM4v5_40;
-    double BSIM4v5_41;
-    double BSIM4v5_42;
-    double BSIM4v5_43;
     double BSIM4v5_44;
     double BSIM4v5_45;
     double BSIM4v5_46;
@@ -566,6 +264,270 @@ typedef struct sBSIM4v5instance
     double BSIM4v5_93;
     double BSIM4v5_94;
     double BSIM4v5_95;
+#endif
+
+    /* cold: setup, parameters, noise, AC, sensitivities, unused matrix pointers */
+    int BSIM4v5gNodePrime;
+    int BSIM4v5sNodePrime;
+    int BSIM4v5dbNode;
+    int BSIM4v5qNode;
+    double BSIM4v5vjsmRev;
+    double BSIM4v5vjdmRev;
+    double BSIM4v5XExpBVS;
+    double BSIM4v5XExpBVD;
+    double BSIM4v5SslpFwd;
+    double BSIM4v5SslpRev;
+    double BSIM4v5DslpFwd;
+    double BSIM4v5DslpRev;
+    double BSIM4v5IVjsmFwd;
+    double BSIM4v5IVjsmRev;
+    double BSIM4v5IVjdmFwd;
+    double BSIM4v5IVjdmRev;
+    double BSIM4v5l;
+    double BSIM4v5w;
+    double BSIM4v5drainArea;
+    double BSIM4v5sourceArea;
+    double BSIM4v5drainSquares;
+    double BSIM4v5sourceSquares;
+    double BSIM4v5drainPerimeter;
+    double BSIM4v5sourcePerimeter;
+    double BSIM4v5sa;
+    double BSIM4v5sb;
+    double BSIM4v5sd;
+    double BSIM4v5sca;
+    double BSIM4v5scb;
+    double BSIM4v5scc;
+    double BSIM4v5sc;
+    double BSIM4v5rbdb;
+    double BSIM4v5rbsb;
+    double BSIM4v5rbpb;
+    double BSIM4v5rbps;
+    double BSIM4v5rbpd;
+    double BSIM4v5delvto;
+    double BSIM4v5mulu0;
+    double BSIM4v5xgw;
+    double BSIM4v5ngcon;
+    double BSIM4v5dtemp;
+    double BSIM4v5vtfbphi1;
+    double BSIM4v5k2;
+    double BSIM4v5icVDS;
+    double BSIM4v5icVGS;
+    double BSIM4v5icVBS;
+    int BSIM4v5mode;
+    int BSIM4v5acnqsMod;
+    int BSIM4v5rgateMod;
+    int BSIM4v5geoMod;
+    int BSIM4v5rgeoMod;
+    int BSIM4v5min;
+    double BSIM4v5vgd_eff;
+    double BSIM4v5dvgd_eff_dvg;
+    double BSIM4v5qinv;
+    double BSIM4v5gIgss;
+    double BSIM4v5gcrg;
+    double BSIM4v5gcrgd;
+    double BSIM4v5gcrgg;
+    double BSIM4v5gcrgs;
+    double BSIM4v5gcrgb;
+    double BSIM4v5gstots;
+    double BSIM4v5csdb;
+    double BSIM4v5cgbb;
+    double BSIM4v5csbb;
+    double BSIM4v5cqgb;
+    double BSIM4v5cqdb;
+    double BSIM4v5cqsb;
+    double BSIM4v5cqbb;
+    double BSIM4v5qbulk;
+    double BSIM4v5qsrc;
+    double BSIM4v5qdef;
+    double BSIM4v5qchqs;
+    double BSIM4v5taunet;
+    double BSIM4v5gtg;
+    double BSIM4v5gtd;
+    double BSIM4v5gts;
+    struct bsim4v5SizeDependParam  *pParam;
+    unsigned BSIM4v5lGiven :1;
+    unsigned BSIM4v5wGiven :1;
+    unsigned BSIM4v5mGiven :1;
+    unsigned BSIM4v5nfGiven :1;
+    unsigned BSIM4v5minGiven :1;
+    unsigned BSIM4v5drainAreaGiven :1;
+    unsigned BSIM4v5sourceAreaGiven    :1;
+    unsigned BSIM4v5drainSquaresGiven  :1;
+    unsigned BSIM4v5sourceSquaresGiven :1;
+    unsigned BSIM4v5drainPerimeterGiven    :1;
+    unsigned BSIM4v5sourcePerimeterGiven   :1;
+    unsigned BSIM4v5saGiven :1;
+    unsigned BSIM4v5sbGiven :1;
+    unsigned BSIM4v5sdGiven :1;
+    unsigned BSIM4v5scaGiven :1;
+    unsigned BSIM4v5scbGiven :1;
+    unsigned BSIM4v5sccGiven :1;
+    unsigned BSIM4v5scGiven :1;
+    unsigned BSIM4v5rbdbGiven   :1;
+    unsigned BSIM4v5rbsbGiven   :1;
+    unsigned BSIM4v5rbpbGiven   :1;
+    unsigned BSIM4v5rbpdGiven   :1;
+    unsigned BSIM4v5rbpsGiven   :1;
+    unsigned BSIM4v5delvtoGiven   :1;
+    unsigned BSIM4v5mulu0Given   :1;
+    unsigned BSIM4v5xgwGiven   :1;
+    unsigned BSIM4v5ngconGiven   :1;
+    unsigned BSIM4v5dtempGiven : 1;
+    unsigned BSIM4v5icVDSGiven :1;
+    unsigned BSIM4v5icVGSGiven :1;
+    unsigned BSIM4v5icVBSGiven :1;
+    unsigned BSIM4v5trnqsModGiven :1;
+    unsigned BSIM4v5acnqsModGiven :1;
+    unsigned BSIM4v5rbodyModGiven :1;
+    unsigned BSIM4v5rgateModGiven :1;
+    unsigned BSIM4v5geoModGiven :1;
+    unsigned BSIM4v5rgeoModGiven :1;
+    double *BSIM4v5DPdPtr;
+    double *BSIM4v5DPdpPtr;
+    double *BSIM4v5DPgpPtr;
+    double *BSIM4v5DPgmPtr;
+    double *BSIM4v5DPspPtr;
+    double *BSIM4v5DPbpPtr;
+    double *BSIM4v5DPdbPtr;
+    double *BSIM4v5DdPtr;
+    double *BSIM4v5DdpPtr;
+    double *BSIM4v5GPdpPtr;
+    double *BSIM4v5GPgpPtr;
+    double *BSIM4v5GPgmPtr;
+    double *BSIM4v5GPgePtr;
+    double *BSIM4v5GPspPtr;
+    double *BSIM4v5GPbpPtr;
+    double *BSIM4v5GMdpPtr;
+    double *BSIM4v5GMgpPtr;
+    double *BSIM4v5GMgmPtr;
+    double *BSIM4v5GMgePtr;
+    double *BSIM4v5GMspPtr;
+    double *BSIM4v5GMbpPtr;
+    double *BSIM4v5GEdpPtr;
+    double *BSIM4v5GEgpPtr;
+    double *BSIM4v5GEgmPtr;
+    double *BSIM4v5GEgePtr;
+    double *BSIM4v5GEspPtr;
+    double *BSIM4v5GEbpPtr;
+    double *BSIM4v5SPdpPtr;
+    double *BSIM4v5SPgpPtr;
+    double *BSIM4v5SPgmPtr;
+    double *BSIM4v5SPsPtr;
+    double *BSIM4v5SPspPtr;
+    double *BSIM4v5SPbpPtr;
+    double *BSIM4v5SPsbPtr;
+    double *BSIM4v5SspPtr;
+    double *BSIM4v5SsPtr;
+    double *BSIM4v5BPdpPtr;
+    double *BSIM4v5BPgpPtr;
+    double *BSIM4v5BPgmPtr;
+    double *BSIM4v5BPspPtr;
+    double *BSIM4v5BPdbPtr;
+    double *BSIM4v5BPbPtr;
+    double *BSIM4v5BPsbPtr;
+    double *BSIM4v5BPbpPtr;
+    double *BSIM4v5DBdpPtr;
+    double *BSIM4v5DBdbPtr;
+    double *BSIM4v5DBbpPtr;
+    double *BSIM4v5DBbPtr;
+    double *BSIM4v5SBspPtr;
+    double *BSIM4v5SBbpPtr;
+    double *BSIM4v5SBbPtr;
+    double *BSIM4v5SBsbPtr;
+    double *BSIM4v5BdbPtr;
+    double *BSIM4v5BbpPtr;
+    double *BSIM4v5BsbPtr;
+    double *BSIM4v5BbPtr;
+    double *BSIM4v5DgpPtr;
+    double *BSIM4v5DspPtr;
+    double *BSIM4v5DbpPtr;
+    double *BSIM4v5SdpPtr;
+    double *BSIM4v5SgpPtr;
+    double *BSIM4v5SbpPtr;
+    double *BSIM4v5QdpPtr;
+    double *BSIM4v5QgpPtr;
+    double *BSIM4v5QspPtr;
+    double *BSIM4v5QbpPtr;
+    double *BSIM4v5QqPtr;
+    double *BSIM4v5DPqPtr;
+    double *BSIM4v5GPqPtr;
+    double *BSIM4v5SPqPtr;
+    double *BSIM4v5BPgmPtrRed;
+    double *BSIM4v5DPgmPtrRed;
+    double *BSIM4v5DPqPtrRed;
+    double *BSIM4v5DbpPtrRed;
+    double *BSIM4v5DgpPtrRed;
+    double *BSIM4v5DspPtrRed;
+    double *BSIM4v5GEbpPtrRed;
+    double *BSIM4v5GEdpPtrRed;
+    double *BSIM4v5GEgePtrRed;
+    double *BSIM4v5GEgmPtrRed;
+    double *BSIM4v5GEgpPtrRed;
+    double *BSIM4v5GEspPtrRed;
+    double *BSIM4v5GMbpPtrRed;
+    double *BSIM4v5GMdpPtrRed;
+    double *BSIM4v5GMgePtrRed;
+    double *BSIM4v5GMgmPtrRed;
+    double *BSIM4v5GMgpPtrRed;
+    double *BSIM4v5GMspPtrRed;
+    double *BSIM4v5GPgePtrRed;
+    double *BSIM4v5GPgmPtrRed;
+    double *BSIM4v5GPqPtrRed;
+    double *BSIM4v5QbpPtrRed;
+    double *BSIM4v5QdpPtrRed;
+    double *BSIM4v5QgpPtrRed;
+    double *BSIM4v5QqPtrRed;
+    double *BSIM4v5QspPtrRed;
+    double *BSIM4v5SPgmPtrRed;
+    double *BSIM4v5SPqPtrRed;
+    double *BSIM4v5SbpPtrRed;
+    double *BSIM4v5SdpPtrRed;
+    double *BSIM4v5SgpPtrRed;
+#ifdef USE_OMP
+    double BSIM4v5rhsgExt;
+    double BSIM4v5grhsMid;
+    double BSIM4v5rhsd;
+    double BSIM4v5rhss;
+    double BSIM4v5rhsq;
+    double BSIM4v5_1;
+    double BSIM4v5_2;
+    double BSIM4v5_3;
+    double BSIM4v5_4;
+    double BSIM4v5_5;
+    double BSIM4v5_6;
+    double BSIM4v5_7;
+    double BSIM4v5_8;
+    double BSIM4v5_9;
+    double BSIM4v5_10;
+    double BSIM4v5_11;
+    double BSIM4v5_12;
+    double BSIM4v5_13;
+    double BSIM4v5_14;
+    double BSIM4v5_15;
+    double BSIM4v5_16;
+    double BSIM4v5_17;
+    double BSIM4v5_18;
+    double BSIM4v5_19;
+    double BSIM4v5_20;
+    double BSIM4v5_21;
+    double BSIM4v5_22;
+    double BSIM4v5_23;
+    double BSIM4v5_24;
+    double BSIM4v5_25;
+    double BSIM4v5_26;
+    double BSIM4v5_27;
+    double BSIM4v5_28;
+    double BSIM4v5_29;
+    double BSIM4v5_30;
+    double BSIM4v5_31;
+    double BSIM4v5_32;
+    double BSIM4v5_33;
+    double BSIM4v5_38;
+    double BSIM4v5_39;
+    double BSIM4v5_40;
+    double BSIM4v5_41;
+    double BSIM4v5_42;
+    double BSIM4v5_43;
     double BSIM4v5_96;
     double BSIM4v5_97;
     double BSIM4v5_98;
@@ -574,7 +536,6 @@ typedef struct sBSIM4v5instance
     double BSIM4v5_101;
     double BSIM4v5_102;
     double BSIM4v5_103;
-
 #endif
 
 #define BSIM4v5vbd BSIM4v5states+ 0
@@ -588,7 +549,6 @@ typedef struct sBSIM4v5instance
 #define BSIM4v5vgms BSIM4v5states+ 8
 #define BSIM4v5vses BSIM4v5states+ 9
 #define BSIM4v5vdes BSIM4v5states+ 10
-
 #define BSIM4v5qb BSIM4v5states+ 11
 #define BSIM4v5cqb BSIM4v5states+ 12
 #define BSIM4v5qg BSIM4v5states+ 13
@@ -597,24 +557,17 @@ typedef struct sBSIM4v5instance
 #define BSIM4v5cqd BSIM4v5states+ 16
 #define BSIM4v5qgmid BSIM4v5states+ 17
 #define BSIM4v5cqgmid BSIM4v5states+ 18
-
 #define BSIM4v5qbs  BSIM4v5states+ 19
 #define BSIM4v5cqbs  BSIM4v5states+ 20
 #define BSIM4v5qbd  BSIM4v5states+ 21
 #define BSIM4v5cqbd  BSIM4v5states+ 22
-
 #define BSIM4v5qcheq BSIM4v5states+ 23
 #define BSIM4v5cqcheq BSIM4v5states+ 24
 #define BSIM4v5qcdump BSIM4v5states+ 25
 #define BSIM4v5cqcdump BSIM4v5states+ 26
 #define BSIM4v5qdef BSIM4v5states+ 27
 #define BSIM4v5qs BSIM4v5states+ 28
-
 #define BSIM4v5numStates 29
-
-
-/* indices to the array of BSIM4v5 NOISE SOURCES */
-
 #define BSIM4v5RDNOIZ       0
 #define BSIM4v5RSNOIZ       1
 #define BSIM4v5RGNOIZ       2
@@ -629,15 +582,12 @@ typedef struct sBSIM4v5instance
 #define BSIM4v5IGDNOIZ      11
 #define BSIM4v5IGBNOIZ      12
 #define BSIM4v5TOTNOIZ      13
-
 #define BSIM4v5NSRCS        14  /* Number of BSIM4v5 noise sources */
-
 #ifndef NONOISE
     double BSIM4v5nVar[NSTATVARS][BSIM4v5NSRCS];
 #else /* NONOISE */
         double **BSIM4v5nVar;
 #endif /* NONOISE */
-
 #ifdef KLU
     BindElement *BSIM4v5DPbpBinding ;
     BindElement *BSIM4v5GPbpBinding ;
@@ -710,7 +660,6 @@ typedef struct sBSIM4v5instance
     BindElement *BSIM4v5SgpBinding ;
     BindElement *BSIM4v5SbpBinding ;
 #endif
-
 } BSIM4v5instance ;
 
 struct bsim4v5SizeDependParam
