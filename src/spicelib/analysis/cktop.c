@@ -640,7 +640,15 @@ gillespie_src (CKTcircuit *ckt, long int firstmode,
 
         } while ((raise >= 1e-7) && (ConvFact < 1));
 
-        ckt->CKTdiagGmin = ckt->CKTgmin = gminstart;
+        /* Restore gmin, but leave no extra conductance on the diagonal:
+         * like the other stepping routines, return with CKTdiagGmin equal
+         * to CKTgshunt.  Leaving it at gmin put 1/gmin from every node to
+         * ground into every later analysis of the same circuit (a later
+         * op or tran that converged directly), silently changing its
+         * solution until some other stepping routine reset it.
+         */
+        ckt->CKTgmin = gminstart;
+        ckt->CKTdiagGmin = ckt->CKTgshunt;
         FREE (OldRhsOld);
         FREE (OldCKTstate0);
     }
