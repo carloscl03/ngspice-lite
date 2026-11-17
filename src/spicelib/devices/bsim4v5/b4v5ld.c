@@ -23,6 +23,9 @@
 #include "ngspice/sperror.h"
 #include "ngspice/devdefs.h"
 #include "ngspice/suffix.h"
+#ifdef NG_MATHTRACE   /* fork-lite diagnostic build only: see b4v5mathtrace.h */
+#include "b4v5mathtrace.h"
+#endif
 /*
 #define MAX_EXP 2.688117142e+43
 #define MIN_EXP 3.720075976e-44
@@ -45,11 +48,19 @@
         } else if (A < -EXP_THRESHOLD)  {                                     \
             B = MIN_EXP;                                                      \
             C = 0;                                                            \
+        } else if ((A) == 0.0) {                                              \
+            B = 1.0;                /* fork-lite: exp(0), exact */            \
+            C = 1.0;                                                          \
         } else   {                                                            \
             B = exp(A);                                                       \
             C = B;                                                            \
         }                                                                     \
     }
+
+/* fork-lite: exp() for arguments that are exactly zero most of the time
+   (body tied to source: vbs = 0; pditsd, dvt1w not given in the PDK).
+   exp(+-0) is exactly 1, so results are bit identical. */
+static inline double b4v5_exp0(double x) { return x == 0.0 ? 1.0 : exp(x); }
 
 #ifdef USE_OMP
 int BSIM4v5LoadOMP(BSIM4v5instance *here, CKTcircuit *ckt);
@@ -388,6 +399,9 @@ int ByPass, ChargeComputationNeeded, error, Check, Check1, Check2;
  double m;
 
 ScalingFactor = 1.0e-9;
+#ifdef NG_MATHTRACE
+mt_begin(here);
+#endif
 ChargeComputationNeeded =  
                  ((ckt->CKTmode & (MODEDCTRANCURVE | MODEAC | MODETRAN | MODEINITSMSIG)) ||
                  ((ckt->CKTmode & MODETRANOP) && (ckt->CKTmode & MODEUIC)))
@@ -883,7 +897,7 @@ for (; model != NULL; model = BSIM4v5nextModel(model))
                                          + ckt->CKTgmin * vbs_jct;
                       }
 		      else if (vbs_jct <= here->BSIM4v5vjsmFwd)
-		      {   evbs = exp(T2);
+		      {   evbs = b4v5_exp0(T2);
 			  here->BSIM4v5gbs = SourceSatCurrent * evbs / Nvtms + ckt->CKTgmin;
                           here->BSIM4v5cbs = SourceSatCurrent * (evbs - 1.0)
                                          + ckt->CKTgmin * vbs_jct;
@@ -981,7 +995,7 @@ for (; model != NULL; model = BSIM4v5nextModel(model))
                                          + ckt->CKTgmin * vbd_jct;
                       }
                       else if (vbd_jct <= here->BSIM4v5vjdmFwd)
-                      {   evbd = exp(T2);
+                      {   evbd = b4v5_exp0(T2);
                           here->BSIM4v5gbd = DrainSatCurrent * evbd / Nvtmd + ckt->CKTgmin;
                           here->BSIM4v5cbd = DrainSatCurrent * (evbd - 1.0)
                                          + ckt->CKTgmin * vbd_jct;
@@ -1051,6 +1065,17 @@ for (; model != NULL; model = BSIM4v5nextModel(model))
           Nvtmrsswg = model->BSIM4v5vtm0 * model->BSIM4v5njtsswgtemp;
           Nvtmrs = model->BSIM4v5vtm0 * model->BSIM4v5njtstemp;
 
+        /* fork-lite: the six trap-assisted tunneling terms. A term whose
+           saturation current is zero (sky130: jtss not given) adds nothing
+           and is not evaluated. The sidewall and gate-sidewall terms are the
+           bottom-term expression with their own N and vts; when those equal
+           the bottom ones (gf180: njts = njtssw = njtsswg, vtss = vtssws =
+           vtsswgs) the result is the same and is reused. */
+        {
+        int tatS1 = here->BSIM4v5SjctTempRevSatCur != 0.0;
+        int tatD2 = here->BSIM4v5DjctTempRevSatCur != 0.0;
+        if (!tatS1) { T1 = 1.0; dT1_dVb = 0.0; }
+        else
         if ((model->BSIM4v5vtss - vbs_jct) < (model->BSIM4v5vtss * 1e-3))
         { T9 = 1.0e3; 
           T0 = - vbs_jct / Nvtmrs * T9;
@@ -1064,6 +1089,8 @@ for (; model != NULL; model = BSIM4v5nextModel(model))
           dT1_dVb = T10 * dT0_dVb;
         }
 
+        if (!tatD2) { T2 = 1.0; dT2_dVb = 0.0; }
+        else
        if ((model->BSIM4v5vtsd - vbd_jct) < (model->BSIM4v5vtsd * 1e-3) )
         { T9 = 1.0e3;
           T0 = -vbd_jct / Nvtmrs * T9;
@@ -1077,6 +1104,10 @@ for (; model != NULL; model = BSIM4v5nextModel(model))
           dT2_dVb = T10 * dT0_dVb;
         }
 
+        if (here->BSIM4v5SswTempRevSatCur == 0.0) { T3 = 1.0; dT3_dVb = 0.0; }
+        else if (tatS1 && Nvtmrssw == Nvtmrs && model->BSIM4v5vtssws == model->BSIM4v5vtss)
+        { T3 = T1; dT3_dVb = dT1_dVb; }
+        else
         if ((model->BSIM4v5vtssws - vbs_jct) < (model->BSIM4v5vtssws * 1e-3) )
         { T9 = 1.0e3; 
           T0 = -vbs_jct / Nvtmrssw * T9;
@@ -1090,6 +1121,10 @@ for (; model != NULL; model = BSIM4v5nextModel(model))
           dT3_dVb = T10 * dT0_dVb;
         }
 
+        if (here->BSIM4v5DswTempRevSatCur == 0.0) { T4 = 1.0; dT4_dVb = 0.0; }
+        else if (tatD2 && Nvtmrssw == Nvtmrs && model->BSIM4v5vtsswd == model->BSIM4v5vtsd)
+        { T4 = T2; dT4_dVb = dT2_dVb; }
+        else
         if ((model->BSIM4v5vtsswd - vbd_jct) < (model->BSIM4v5vtsswd * 1e-3) )
         { T9 = 1.0e3; 
           T0 = -vbd_jct / Nvtmrssw * T9;
@@ -1103,6 +1138,10 @@ for (; model != NULL; model = BSIM4v5nextModel(model))
           dT4_dVb = T10 * dT0_dVb;
         }
 
+        if (here->BSIM4v5SswgTempRevSatCur == 0.0) { T5 = 1.0; dT5_dVb = 0.0; }
+        else if (tatS1 && Nvtmrsswg == Nvtmrs && model->BSIM4v5vtsswgs == model->BSIM4v5vtss)
+        { T5 = T1; dT5_dVb = dT1_dVb; }
+        else
         if ((model->BSIM4v5vtsswgs - vbs_jct) < (model->BSIM4v5vtsswgs * 1e-3) )
         { T9 = 1.0e3; 
           T0 = -vbs_jct / Nvtmrsswg * T9;
@@ -1116,6 +1155,10 @@ for (; model != NULL; model = BSIM4v5nextModel(model))
           dT5_dVb = T10 * dT0_dVb;
         }
 
+        if (here->BSIM4v5DswgTempRevSatCur == 0.0) { T6 = 1.0; dT6_dVb = 0.0; }
+        else if (tatD2 && Nvtmrsswg == Nvtmrs && model->BSIM4v5vtsswgd == model->BSIM4v5vtsd)
+        { T6 = T2; dT6_dVb = dT2_dVb; }
+        else
         if ((model->BSIM4v5vtsswgd - vbd_jct) < (model->BSIM4v5vtsswgd * 1e-3) )
         { T9 = 1.0e3; 
           T0 = -vbd_jct / Nvtmrsswg * T9;
@@ -1127,6 +1170,7 @@ for (; model != NULL; model = BSIM4v5nextModel(model))
           dT0_dVb = model->BSIM4v5vtsswgd / Nvtmrsswg * (T9 + vbd_jct * T9 * T9) ;
           DEXP(T0, T6, T10);
           dT6_dVb = T10 * dT0_dVb;
+        }
         }
 
 	  here->BSIM4v5gbs += here->BSIM4v5SjctTempRevSatCur * dT1_dVb
@@ -1241,7 +1285,7 @@ for (; model != NULL; model = BSIM4v5nextModel(model))
 
           T0 = pParam->BSIM4v5dvt1w * pParam->BSIM4v5weff * Leff / ltw;
           if (T0 < EXP_THRESHOLD)
-          {   T1 = exp(T0);
+          {   T1 = b4v5_exp0(T0);
               T2 = T1 - 1.0;
               T3 = T2 * T2;
               T4 = T3 + 2.0 * T1 * MIN_EXP;
@@ -1978,7 +2022,7 @@ for (; model != NULL; model = BSIM4v5nextModel(model))
               dT1_dVd = 0;
           }
 	  else
-          {   T1 = exp(T0);
+          {   T1 = b4v5_exp0(T0);
               dT1_dVd = T1 * pParam->BSIM4v5pditsd;
           }
 
