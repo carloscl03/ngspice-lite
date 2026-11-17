@@ -89,7 +89,7 @@ CKTtrunc(CKTcircuit *ckt, double *timeStep)
 #endif
             switch (ckt->CKTorder) {
             case 1:
-                for (i = 1; i < size; i++) {
+                for (i = 1; i <= size; i++) {
                     tol = MAX(fabs(ckt->CKTrhs[i]), fabs(ckt->CKTpred[i])) *
                         ckt->CKTlteReltol + ckt->CKTlteAbstol;
                     node = node->next;
@@ -116,7 +116,7 @@ CKTtrunc(CKTcircuit *ckt, double *timeStep)
                 }
                 break;
             case 2:
-                for (i = 1; i < size; i++) {
+                for (i = 1; i <= size; i++) {
                     tol = MAX(fabs(ckt->CKTrhs[i]), fabs(ckt->CKTpred[i])) *
                         ckt->CKTlteReltol + ckt->CKTlteAbstol;
                     node = node->next;
@@ -186,7 +186,7 @@ CKTtrunc(CKTcircuit *ckt, double *timeStep)
             for (i = 0; i <= ckt->CKTorder; i++) {
                 delsum += ckt->CKTdeltaOld[i];
             }
-            for (i = 1; i < size; i++) {
+            for (i = 1; i <= size; i++) {
                 node = node->next;
                 if (node->type != SP_VOLTAGE) continue;
                 tol = MAX(fabs(ckt->CKTrhs[i]), fabs(ckt->CKTpred[i])) *

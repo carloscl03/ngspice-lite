@@ -111,11 +111,13 @@ CKTsetup(CKTcircuit *ckt)
     if (ngpool_configure(nthreads) > 1)
         omp_set_num_threads(1);
 
-    /* fork-lite: with few instances the fork/join and spin-wait cost of a
-       parallel region exceeds the work (59 MOSFETs: 8 threads was 40 % slower
-       than 1). Loops stay serial below this count. */
+    /* fork-lite: with very few instances waking the pool costs more than the
+       work. Measured on a quiet 4-core laptop, 4 threads, every device loop on
+       the pool: a 59-MOSFET sky130 LIF cell runs 1.5x faster and a 215-MOSFET
+       gf180 chip 1.9x faster than with 1 thread (2026-11-17); 16 and 32 give
+       the same times. The former default, 256, kept both serial. */
     if (!cp_getvar("omp_min_inst", CP_NUM, &ckt->CKTompMinInst, 0))
-        ckt->CKTompMinInst = 256;
+        ckt->CKTompMinInst = 32;
 /*    if (nthreads == 1)
       printf("OpenMP: %d thread is requested in ngspice\n", nthreads);
     else

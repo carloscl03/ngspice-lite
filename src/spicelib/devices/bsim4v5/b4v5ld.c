@@ -167,6 +167,80 @@ CKTcircuit *ckt)
 }
 
 
+/* fork-lite diagnostic: NGSPICE_BYPASSTRACE=1 tabulates, at exit, the bypass
+   decision of every transient/DC instance evaluation: how many were not
+   eligible (bypass off, predictor iteration), how many were bypassed, and for
+   the rest which of the bypass tests failed first and by how much
+   (|delta| / tolerance, in decades). Counters are per pool thread. */
+enum { BPT_OFF, BPT_PRED, BPT_HIT, BPT_HITDC,
+       BPT_VDS, BPT_VGS, BPT_VBS, BPT_VBD, BPT_VGES, BPT_VGMS, BPT_VDBS, BPT_VDBD, BPT_VSBS,
+       BPT_VSES, BPT_VDES, BPT_ID, BPT_IB, BPT_IGS, BPT_IGD, BPT_IGB, BPT_ISES, BPT_IDED, BPT_N };
+static const char *bpt_name[BPT_N] = { "bypass off", "predictor iteration", "BYPASSED", "bypassed (dc)",
+       "vds", "vgs", "vbs", "vbd", "vges", "vgms", "vdbs", "vdbd", "vsbs", "vses", "vdes",
+       "id", "ib", "igs", "igd", "igb", "ises", "ided" };
+static long bpt_cnt[64][BPT_N];
+static long bpt_dec[64][BPT_N][4];       /* failing ratio: <10, <100, <1e4, >=1e4 */
+static int bpt_on = -1;
+static void bpt_report(void)
+{
+    long tot[BPT_N] = {0}, dec[BPT_N][4] = {{0}}, all = 0, elig;
+    int t, k, b;
+    for (t = 0; t < 64; t++)
+        for (k = 0; k < BPT_N; k++) {
+            tot[k] += bpt_cnt[t][k];
+            for (b = 0; b < 4; b++) dec[k][b] += bpt_dec[t][k][b];
+        }
+    for (k = 0; k < BPT_N; k++) all += tot[k];
+    if (!all) return;
+    elig = all - tot[BPT_OFF] - tot[BPT_PRED];
+    fprintf(stderr, "BYPASSTRACE bsim4v5: evaluations=%ld eligible=%ld bypassed=%ld (%.1f%% of eligible)\n",
+            all, elig, tot[BPT_HIT] + tot[BPT_HITDC], elig ? 100.0 * (tot[BPT_HIT] + tot[BPT_HITDC]) / elig : 0.0);
+    for (k = 0; k < BPT_N; k++)
+        if (tot[k])
+            fprintf(stderr, "BYPASSTRACE   %-20s %10ld  %5.1f%%   ratio <10:%ld <100:%ld <1e4:%ld >=1e4:%ld\n",
+                    bpt_name[k], tot[k], 100.0 * tot[k] / all, dec[k][0], dec[k][1], dec[k][2], dec[k][3]);
+}
+static void bpt_why(BSIM4v5instance *here, BSIM4v5model *model, CKTcircuit *ckt,
+                    double vds, double vgs, double vbs, double vbd, double vges, double vgms,
+                    double vdbs, double vdbd, double vsbs, double vses, double vdes,
+                    double delvds, double delvgs, double delvbs, double delvbd, double delvges, double delvgms,
+                    double delvdbs, double delvdbd, double delvsbs, double delvses, double delvded,
+                    double cdhat, double Idtot, double cbhat, double Ibtot, double cgshat, double Igstot,
+                    double cgdhat, double Igdtot, double cgbhat, double Igbtot, double cseshat, double Isestot,
+                    double cdedhat, double Idedtot)
+{
+    int t = ngpool_tid(), why = -1;
+    double r = 0;
+    double *s0 = ckt->CKTstate0;
+    if (t < 0 || t > 63) t = 0;
+#define BPV(code, del, v, st) if (why < 0) { double tl = ckt->CKTreltol * MAX(fabs(v), fabs(s0[here->st])) + ckt->CKTvoltTol; \
+        if (!(fabs(del) < tl)) { why = code; r = fabs(del) / tl; } }
+#define BPI(code, hat, tot) if (why < 0) { double tl = ckt->CKTreltol * MAX(fabs(hat), fabs(tot)) + ckt->CKTabstol; \
+        if (!(fabs((hat) - (tot)) < tl)) { why = code; r = fabs((hat) - (tot)) / tl; } }
+    if (!ckt->CKTbypass) why = BPT_OFF;
+    else if (ckt->CKTmode & MODEINITPRED) why = BPT_PRED;
+    BPV(BPT_VDS, delvds, vds, BSIM4v5vds)
+    BPV(BPT_VGS, delvgs, vgs, BSIM4v5vgs)
+    BPV(BPT_VBS, delvbs, vbs, BSIM4v5vbs)
+    BPV(BPT_VBD, delvbd, vbd, BSIM4v5vbd)
+    if (here->BSIM4v5rgateMod == 2 || here->BSIM4v5rgateMod == 3) { BPV(BPT_VGES, delvges, vges, BSIM4v5vges) }
+    if (here->BSIM4v5rgateMod == 3) { BPV(BPT_VGMS, delvgms, vgms, BSIM4v5vgms) }
+    if (here->BSIM4v5rbodyMod) { BPV(BPT_VDBS, delvdbs, vdbs, BSIM4v5vdbs) BPV(BPT_VDBD, delvdbd, vdbd, BSIM4v5vdbd) BPV(BPT_VSBS, delvsbs, vsbs, BSIM4v5vsbs) }
+    if (model->BSIM4v5rdsMod) { BPV(BPT_VSES, delvses, vses, BSIM4v5vses) BPV(BPT_VDES, delvded, vdes, BSIM4v5vdes) }
+    BPI(BPT_ID, cdhat, Idtot)
+    BPI(BPT_IB, cbhat, Ibtot)
+    if (model->BSIM4v5igcMod) { BPI(BPT_IGS, cgshat, Igstot) BPI(BPT_IGD, cgdhat, Igdtot) }
+    if (model->BSIM4v5igbMod) { BPI(BPT_IGB, cgbhat, Igbtot) }
+    if (model->BSIM4v5rdsMod) { BPI(BPT_ISES, cseshat, Isestot) BPI(BPT_IDED, cdedhat, Idedtot) }
+#undef BPV
+#undef BPI
+    if (why < 0)
+        why = (ckt->CKTmode & (MODETRAN | MODEAC)) || ((ckt->CKTmode & MODETRANOP) && (ckt->CKTmode & MODEUIC)) ? BPT_HIT : BPT_HITDC;
+    bpt_cnt[t][why]++;
+    if (why >= BPT_VDS)
+        bpt_dec[t][why][r < 10 ? 0 : r < 100 ? 1 : r < 1e4 ? 2 : 3]++;
+}
+
 int BSIM4v5LoadOMP(BSIM4v5instance *here, CKTcircuit *ckt) {
 BSIM4v5model *model = BSIM4v5modPtr(here);
 #else
@@ -577,6 +651,12 @@ for (; model != NULL; model = BSIM4v5nextModel(model))
                        + here->BSIM4v5gdtotd * delvds + here->BSIM4v5gdtotg * delvgs
                        + here->BSIM4v5gdtotb * delvbs;
 
+               if (bpt_on < 0) { bpt_on = getenv("NGSPICE_BYPASSTRACE") != NULL; if (bpt_on) atexit(bpt_report); }
+               if (bpt_on)
+                   bpt_why(here, model, ckt, vds, vgs, vbs, vbd, vges, vgms, vdbs, vdbd, vsbs, vses, vdes,
+                           delvds, delvgs, delvbs, delvbd, delvges, delvgms, delvdbs, delvdbd, delvsbs, delvses, delvdes,
+                           cdhat, Idtot, cbhat, Ibtot, cgshat, Igstot, cgdhat, Igdtot, cgbhat, Igbtot,
+                           cseshat, Isestot, cdedhat, Idedtot);
 
 #ifndef NOBYPASS
                /* Following should be one IF statement, but some C compilers 
