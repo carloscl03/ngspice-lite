@@ -162,6 +162,35 @@ static void write_node_mapping(const OsdiDescriptor *descr, void *inst,
   }
 }
 
+/* Flag the (collapsed) instance nodes that appear in at least one jacobian
+ * entry or in an absdelay entry. The others never get a matrix element or a
+ * residual. */
+static void mark_used_nodes(const OsdiDescriptor *descr, void *inst,
+                            uint8_t *used, uint32_t num_nodes,
+                            bool with_absdelay) {
+  uint32_t *node_mapping =
+      (uint32_t *)(((char *)inst) + descr->node_mapping_offset);
+  memset(used, 0, num_nodes);
+  for (uint32_t i = 0; i < descr->num_jacobian_entries; i++) {
+    uint32_t n1 = node_mapping[descr->jacobian_entries[i].nodes.node_1];
+    uint32_t n2 = node_mapping[descr->jacobian_entries[i].nodes.node_2];
+    if (n1 < num_nodes)
+      used[n1] = 1;
+    if (n2 < num_nodes)
+      used[n2] = 1;
+  }
+  if (with_absdelay) {
+    for (uint32_t k = 0; k < descr->absdelay_count; k++) {
+      uint32_t y = node_mapping[descr->absdelays[k].y_node];
+      uint32_t z = node_mapping[descr->absdelays[k].z_node];
+      if (y < num_nodes)
+        used[y] = 1;
+      if (z < num_nodes)
+        used[z] = 1;
+    }
+  }
+}
+
 /* NGSPICE state vectors for an instance are always continous so we just write
  * state_start .. state_start + num_state to state_idx */
 static void write_state_ids(const OsdiDescriptor *descr, void *inst,
@@ -221,6 +250,7 @@ int OSDIsetup(SMPmatrix *matrix, GENmodel *inModel, CKTcircuit *ckt,
   /* setup a temporary buffer */
   uint32_t *node_ids = TMALLOC(uint32_t, descr->num_nodes);
   uint32_t *node_repr = TMALLOC(uint32_t, descr->num_nodes);
+  uint8_t *node_used = TMALLOC(uint8_t, descr->num_nodes);
 
   /* determine the number of states required by each instance */
   int num_states = (int)descr->num_states;
@@ -286,10 +316,20 @@ int OSDIsetup(SMPmatrix *matrix, GENmodel *inModel, CKTcircuit *ckt,
 
       uint32_t num_nodes = collapse_nodes(descr, inst, connected_terminals);
       repr_nodes(descr, inst, node_repr, num_nodes);
+      /* An internal node that no contribution references has no matrix
+       * entries. Giving it a circuit node makes KLU (which drops
+       * structurally empty columns) report a matrix size smaller than
+       * the node count. Map such nodes to ground instead. */
+      mark_used_nodes(descr, inst, node_used, num_nodes,
+                      entry->experimental && descr->absdelay_count > 0);
       /* copy terminals */
       memcpy(node_ids, gen_inst + 1, sizeof(int) * connected_terminals);
       /* create internal nodes as required */
       for (uint32_t i = connected_terminals; i < num_nodes; i++) {
+        if (!node_used[i]) {
+          node_ids[i] = 0;
+          continue;
+        }
         const OsdiNode *node = &descr->nodes[node_repr[i]];
         // TODO handle currents  correctly
         if (node->is_flow) {
@@ -299,6 +339,7 @@ int OSDIsetup(SMPmatrix *matrix, GENmodel *inModel, CKTcircuit *ckt,
         }
         if (error) {
           free(node_repr);
+          free(node_used);
           free(node_ids);
           return (error);
         }
@@ -311,6 +352,7 @@ int OSDIsetup(SMPmatrix *matrix, GENmodel *inModel, CKTcircuit *ckt,
       err = init_matrix(matrix, descr, inst);
       if (err) {
         free(node_repr);
+        free(node_used);
         free(node_ids);
         return err;
       }
@@ -345,6 +387,7 @@ int OSDIsetup(SMPmatrix *matrix, GENmodel *inModel, CKTcircuit *ckt,
           extra->delay_hist[k]  = NULL;
           if (!extra->delay_jac_y[k] || !extra->delay_jac_z[k]) {
             free(node_repr);
+            free(node_used);
             free(node_ids);
             return E_NOMEM;
           }
@@ -359,6 +402,7 @@ int OSDIsetup(SMPmatrix *matrix, GENmodel *inModel, CKTcircuit *ckt,
   }
 
   free(node_repr);
+  free(node_used);
   free(node_ids);
 
   return res;
