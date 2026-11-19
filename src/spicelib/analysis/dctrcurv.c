@@ -294,7 +294,11 @@ DCtrCurv(CKTcircuit *ckt, int restart)
             /* If no event-driven instances, do what SPICE normally does */
 #endif
 
-            if (newcompat.hs) {
+            /* fork-lite experiment: NGSPICE_DCCONT=1 keeps the continuation
+               (NIiter from the previous point) in HSPICE compatibility mode */
+            static int dccont = -1;
+            if (dccont < 0) dccont = getenv("NGSPICE_DCCONT") != NULL;
+            if (newcompat.hs && !dccont) {
                 converged = CKTop(ckt,
                                   (ckt->CKTmode & MODEUIC) | MODEDCTRANCURVE | MODEINITJCT,
                                   (ckt->CKTmode & MODEUIC) | MODEDCTRANCURVE | MODEINITFLOAT,

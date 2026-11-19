@@ -8,6 +8,8 @@ Modified: 2005 Paolo Nenzi - Restructured
 #include "ngspice/ngspice.h"
 #include "ngspice/cktdefs.h"
 #include "ngspice/devdefs.h"
+#include "vsrc/vsrcdefs.h"
+#include "dev.h"
 #include "ngspice/sperror.h"
 #include "ngspice/cpextern.h"
 #include "ngspice/fteext.h"
@@ -720,4 +722,134 @@ spice3_src (CKTcircuit *ckt, long int firstmode,
 #endif
 
     return 0;
+}
+
+
+
+/* Largest level of an independent voltage source: the DC value and, for a
+ * source with a waveform, the levels of the waveform (V1/V2 of PULSE and
+ * EXP, offset + amplitude of SINE and SFFM, the values of PWL).  Times,
+ * frequencies and the like are not levels and are skipped. */
+static double
+vsrc_level(VSRCinstance *here)
+{
+    double *c = here->VSRCcoeffs, v = fabs(here->VSRCdcValue);
+    int n = here->VSRCfunctionOrder, i;
+
+    if (!c || !here->VSRCcoeffsGiven)
+        return v;
+    switch (here->VSRCfunctionType) {
+    case PULSE:
+    case EXP:
+        if (n > 0) v = MAX(v, fabs(c[0]));
+        if (n > 1) v = MAX(v, fabs(c[1]));
+        break;
+    case SINE:
+    case SFFM:
+        if (n > 1) v = MAX(v, fabs(c[0]) + fabs(c[1]));
+        else if (n > 0) v = MAX(v, fabs(c[0]));
+        break;
+    case PWL:
+        for (i = 1; i < n; i += 2)
+            v = MAX(v, fabs(c[i]));
+        break;
+    default:
+        break;
+    }
+    return v;
+}
+
+static int
+uf_find(int *parent, int x)
+{
+    while (parent[x] != x) {
+        parent[x] = parent[parent[x]];
+        x = parent[x];
+    }
+    return x;
+}
+
+/* CKTsourceWindows --
+ *
+ * Damping window of every node for NIiter(): W = k * Vs + 1 V, where Vs is
+ * the largest level of the independent voltage sources in the node's part
+ * of the circuit.  The parts are the groups of nodes joined by the
+ * terminals of any device instance; ground does not join them, so that,
+ * e.g., a source that only carries a parameter to the .control section
+ * does not widen the window of the rest of the circuit.  A part without a
+ * voltage source of its own gets the window of the largest source of the
+ * whole circuit.  The groups are computed once per circuit; the source
+ * levels are read at every call (alter may change them).
+ *
+ * Returns an array indexed by equation number (valid up to CKTmaxEqNum),
+ * owned by this routine.
+ */
+double *
+CKTsourceWindows(CKTcircuit *ckt, double k)
+{
+    static CKTcircuit *c_ckt = NULL;
+    static void *c_matrix = NULL;
+    static int c_n = -1, *parent = NULL;
+    static double *level = NULL, *win = NULL;
+    SPICEdev **devs = devices();
+    int n = ckt->CKTmaxEqNum, t, i, vtype = CKTtypelook("Vsource");
+    double gmax = 0.0;
+    GENmodel *m;
+    GENinstance *inst;
+
+    if (ckt != c_ckt || n != c_n || (void *) ckt->CKTmatrix != c_matrix) {
+        parent = TREALLOC(int, parent, n + 1);
+        level = TREALLOC(double, level, n + 1);
+        win = TREALLOC(double, win, n + 1);
+        for (i = 0; i <= n; i++)
+            parent[i] = i;
+        for (t = 0; t < DEVmaxnum; t++) {
+            int nterm;
+            if (!ckt->CKThead[t] || !devs[t] || !devs[t]->DEVpublic.terms)
+                continue;
+            nterm = *(devs[t]->DEVpublic.terms);
+            for (m = ckt->CKThead[t]; m; m = m->GENnextModel)
+                for (inst = m->GENinstances; inst; inst = inst->GENnextInstance) {
+                    int *node = GENnode(inst), first = 0, j;
+                    for (j = 0; j < nterm; j++) {
+                        int a = node[j];
+                        if (a <= 0 || a > n)
+                            continue;
+                        if (!first)
+                            first = a;
+                        else
+                            parent[uf_find(parent, a)] = uf_find(parent, first);
+                    }
+                }
+        }
+        c_ckt = ckt;
+        c_n = n;
+        c_matrix = (void *) ckt->CKTmatrix;
+    }
+
+    for (i = 0; i <= n; i++)
+        level[i] = -1.0;           /* no source in this part (yet) */
+    if (vtype >= 0)
+        for (m = ckt->CKThead[vtype]; m; m = m->GENnextModel) {
+            VSRCinstance *here;
+            for (here = VSRCinstances((VSRCmodel *) m); here;
+                 here = VSRCnextInstance(here)) {
+                double v = vsrc_level(here);
+                int r;
+                gmax = MAX(gmax, v);
+                if (here->VSRCposNode > 0) {
+                    r = uf_find(parent, here->VSRCposNode);
+                    level[r] = MAX(level[r], v);
+                }
+                if (here->VSRCnegNode > 0) {
+                    r = uf_find(parent, here->VSRCnegNode);
+                    level[r] = MAX(level[r], v);
+                }
+            }
+        }
+    for (i = 0; i <= n; i++) {
+        double l = level[uf_find(parent, i)];
+        win[i] = k * (l < 0 ? gmax : l) + 1.0;
+    }
+    return win;
 }

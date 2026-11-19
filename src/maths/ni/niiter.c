@@ -20,6 +20,8 @@ Modified: 2001 AlansFixes
 #include "ngspice/sperror.h"
 #include "ngspice/fteext.h"
 
+extern double *CKTsourceWindows(CKTcircuit *ckt, double k);
+
 /* Limit the number of 'singular matrix' warnings */
 static int msgcount = 0;
 
@@ -65,6 +67,22 @@ NIiter(CKTcircuit *ckt, int maxIter)
     }
 
     /* OldCKTstate0 = TMALLOC(double, ckt->CKTnumStates + 1); */
+
+    /* fork-lite experiment: NGSPICE_DAMPWIN=k selects the window damping
+     * (see the node damping block below), window = k * Vsrc_max + 1 V. */
+    static double dampwin = -1;
+    static int dampafter = -1;
+    if (dampwin < 0) {
+        const char *e = getenv("NGSPICE_DAMPWIN");
+        dampwin = e ? atof(e) : 0.0;
+    }
+    /* fork-lite experiment: NGSPICE_DAMPAFTER=n adds the step damping
+     * (absdv/reldv) once n iterations have passed without convergence,
+     * e.g. when Newton is caught in a limit cycle. */
+    if (dampafter < 0) {
+        const char *e = getenv("NGSPICE_DAMPAFTER");
+        dampafter = e ? atoi(e) : 0;
+    }
 
     {
         static int ot = -1;
@@ -252,8 +270,8 @@ NIiter(CKTcircuit *ckt, int maxIter)
                CKTnumStates the first time it is run */
             /* fork-lite: OldCKTstate0 is only used by the node damping
                block below, which runs in the operating point only */
-            if (ckt->CKTnodeDamping &&
-                (ckt->CKTmode & (MODETRANOP | MODEDCOP))) {
+            if ((ckt->CKTnodeDamping || dampwin > 0 || dampafter > 0) &&
+                (ckt->CKTmode & (MODETRANOP | MODEDCOP | MODEDCTRANCURVE))) {
                 if (!OldCKTstate0)
                     OldCKTstate0 = TMALLOC(double, ckt->CKTnumStates + 1);
                 if (ckt->CKTstate0)
@@ -295,6 +313,50 @@ NIiter(CKTcircuit *ckt, int maxIter)
                 return(E_ITERLIM);
             }
 
+            /* fork-lite diagnostic: NGSPICE_NEWTONTRACE=n prints, for the first n
+               Newton iterations, the size of the update over the whole solution:
+               the largest |dx|/tol (and where), how many unknowns violate their
+               tolerance, the largest voltage and current updates, and the init
+               mode.  A ratio that drops ~10x per iteration instead of squaring
+               means linear (not quadratic) convergence, i.e. an inexact Jacobian
+               or a non-smooth model. */
+            {
+                static long ntmax = -1, ntshown = 0;
+                if (ntmax < 0) { const char *e = getenv("NGSPICE_NEWTONTRACE"); ntmax = e ? atol(e) : 0; }
+                if (ntshown < ntmax) {
+                    CKTnode *nd = ckt->CKTnodes;
+                    int k, nviol = 0, kr = 0, kv = 0, ki = 0;
+                    int sz = SMPmatSize(ckt->CKTmatrix);
+                    double rmax = 0, dvmax = 0, dimax = 0;
+                    for (k = 1; k <= sz; k++) {
+                        double nw, od, d, tl;
+                        nd = nd->next;
+                        nw = ckt->CKTrhs[k];
+                        od = ckt->CKTrhsOld[k];
+                        d = fabs(nw - od);
+                        if (nd->type == SP_VOLTAGE) {
+                            tl = ckt->CKTreltol * MAX(fabs(od), fabs(nw)) + ckt->CKTvoltTol;
+                            if (d > dvmax) { dvmax = d; kv = k; }
+                        } else {
+                            tl = ckt->CKTreltol * MAX(fabs(od), fabs(nw)) + ckt->CKTabstol;
+                            if (d > dimax) { dimax = d; ki = k; }
+                        }
+                        if (d > tl) nviol++;
+                        if (d / tl > rmax) { rmax = d / tl; kr = k; }
+                    }
+                    ntshown++;
+                    fprintf(stderr, "NT it=%d mode=%s loadnc=%d nviol=%d maxratio=%.3e at %s"
+                            " | maxdv=%.3e at %s (%.4e -> %.4e) | maxdi=%.3e at %s\n", iterno,
+                            (ckt->CKTmode & MODEINITJCT) ? "JCT" :
+                            (ckt->CKTmode & MODEINITFIX) ? "FIX" :
+                            (ckt->CKTmode & MODEINITFLOAT) ? "FLOAT" : "other",
+                            ckt->CKTnoncon, nviol, rmax, kr ? CKTnodName(ckt, kr) : "-",
+                            dvmax, kv ? CKTnodName(ckt, kv) : "-",
+                            kv ? ckt->CKTrhsOld[kv] : 0.0, kv ? ckt->CKTrhs[kv] : 0.0,
+                            dimax, ki ? CKTnodName(ckt, ki) : "-");
+                }
+            }
+
             /* fork-lite diagnostic: NGSPICE_VTRACE=t0 tabulates why each iteration
                is declared non-converged (load limiting vs voltage/current tests) */
             {
@@ -326,23 +388,59 @@ NIiter(CKTcircuit *ckt, int maxIter)
 #endif
         }
 
-        if ((ckt->CKTnodeDamping != 0) && (ckt->CKTnoncon != 0) &&
-            ((ckt->CKTmode & MODETRANOP) || (ckt->CKTmode & MODEDCOP)) &&
+        /* Node damping (.option nodedamping): in the DC operating point and
+         * the DC sweep, limit the Newton update so that no node voltage moves
+         * more than max(absdv, reldv * |v|) in one iteration.  The whole
+         * update (node voltages, branch currents and device states) is scaled
+         * by the same factor, so the Newton direction is kept; near the
+         * solution the updates are far below the limit and the iteration is
+         * unchanged.  Without it, Newton can take steps of many kV from a poor
+         * starting point and settle on a non-physical root of a model outside
+         * its range of validity.  absdv (0.5 V) and reldv (2.0) are the
+         * defaults of the existing options.
+         */
+        if ((ckt->CKTnodeDamping != 0 || dampwin > 0 || dampafter > 0) &&
+            (ckt->CKTnoncon != 0) &&
+            (ckt->CKTmode & (MODETRANOP | MODEDCOP | MODEDCTRANCURVE)) &&
             (iterno > 1))
         {
             CKTnode *node;
-            double diff, maxdiff = 0;
+            double diff, lim, damp_factor = 1.0;
+            if (dampwin > 0) {
+                /* Window damping: only the nodes whose new value would be
+                 * outside |v| <= W (CKTsourceWindows(): per part of the circuit), limit the
+                 * update.  Such a node may reach the window edge, and from
+                 * outside it may move max(absdv, reldv * |v|), so that a
+                 * genuine large voltage is still reached geometrically. */
+                double *Wn = CKTsourceWindows(ckt, dampwin);
+                for (node = ckt->CKTnodes->next; node; node = node->next)
+                    if (node->type == SP_VOLTAGE) {
+                        double W = Wn[node->number];
+                        double vo = ckt->CKTrhsOld[node->number];
+                        double vn = ckt->CKTrhs[node->number];
+                        if (fabs(vn) <= W)
+                            continue;
+                        diff = fabs(vn - vo);
+                        if (fabs(vo) < W)   /* inside: stop at the edge */
+                            lim = MAX(ckt->CKTabsDv, fabs((vn > 0 ? W : -W) - vo));
+                        else                /* outside: grow geometrically */
+                            lim = MAX(ckt->CKTabsDv, ckt->CKTrelDv * fabs(vo));
+                        if (diff > lim && lim / diff < damp_factor)
+                            damp_factor = lim / diff;
+                    }
+            }
+            if ((dampwin <= 0 && dampafter <= 0 && ckt->CKTnodeDamping) ||
+                (dampafter > 0 && iterno > dampafter))
             for (node = ckt->CKTnodes->next; node; node = node->next)
                 if (node->type == SP_VOLTAGE) {
                     diff = fabs(ckt->CKTrhs[node->number] - ckt->CKTrhsOld[node->number]);
-                    if (maxdiff < diff)
-                        maxdiff = diff;
+                    lim = MAX(ckt->CKTabsDv,
+                              ckt->CKTrelDv * fabs(ckt->CKTrhsOld[node->number]));
+                    if (diff > lim && lim / diff < damp_factor)
+                        damp_factor = lim / diff;
                 }
 
-            if (maxdiff > 10) {
-                double damp_factor = 10 / maxdiff;
-                if (damp_factor < 0.1)
-                    damp_factor = 0.1;
+            if (damp_factor < 1.0) {
                 for (node = ckt->CKTnodes->next; node; node = node->next) {
                     diff = ckt->CKTrhs[node->number] - ckt->CKTrhsOld[node->number];
                     ckt->CKTrhs[node->number] =
